@@ -1,0 +1,65 @@
+function plot_vf_cylinder(path_start, path_end, path_rad)
+    % Read data from CSV files
+    cylinder_start = csvread(path_start);
+    cylinder_end = csvread(path_end);
+    cylinder_rad = csvread(path_rad);
+    
+    % Number of cylinder elements
+    num_cylinders = size(cylinder_start, 1);
+    
+    % Define number of points for circular cross-section
+    theta = linspace(0, 2 * pi, 30); % Increase for smoother cylinders
+    X = cos(theta);  % Circle x-coordinates
+    Y = sin(theta);  % Circle y-coordinates
+    
+    % Loop over each cylinder
+    for j = 1:num_cylinders
+        % Cylinder radius and start/end points
+        R = cylinder_rad(j);
+        P1 = cylinder_start(j, :);
+        P2 = cylinder_end(j, :);
+        
+        % Cylinder axis direction
+        direction = P2 - P1;
+        height = norm(direction);
+        direction = direction / height; % Normalize
+        
+        % Generate cylinder coordinates (before rotation)
+        Z = linspace(0, height, 10); % Cylinder height steps
+        [Xc, Zc] = meshgrid(X, Z);
+        [Yc, Zc] = meshgrid(Y, Z);
+        Xc = R * Xc;
+        Yc = R * Yc;
+        
+        % Rotate and translate the cylinder
+        v = [0 0 1]; % Default cylinder axis
+        if norm(cross(v, direction)) > 1e-6
+            % Compute rotation matrix to align cylinder axis
+            rot_axis = cross(v, direction);
+            rot_angle = acos(dot(v, direction));
+            R_rot = axang2rotm([rot_axis, rot_angle]); % Rotation matrix
+            % Apply rotation
+            for i = 1:numel(Xc)
+                rotated_point = R_rot * [Xc(i); Yc(i); Zc(i)];
+                Xc(i) = rotated_point(1);
+                Yc(i) = rotated_point(2);
+                Zc(i) = rotated_point(3);
+            end
+        end
+        
+        % Translate cylinder to correct position
+        Xc = Xc + P1(1);
+        Yc = Yc + P1(2);
+        Zc = Zc + P1(3);
+        
+        % Plot the cylinder surface
+        surf(Xc, Yc, Zc, 'FaceColor', 'k', 'EdgeColor', 'none', 'FaceAlpha', 0.5);
+        hold on;
+    end
+    axis equal;
+    xlabel('X');
+    ylabel('Y');
+    zlabel('Z');
+    grid off;
+    view(3);
+end

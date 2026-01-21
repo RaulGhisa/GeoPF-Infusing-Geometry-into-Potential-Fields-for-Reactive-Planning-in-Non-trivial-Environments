@@ -1,0 +1,210 @@
+clear 
+clc
+%path_base = "/home/yuhe/Desktop/project/3-GeometricPrimitives/RealExp/GeometricPrimitives/data";
+path_base =  "/home/yuhe/Desktop/project/3-GeometricPrimitives/cpp/data/maze_folder_1";
+path_pub = path_base + "/0.5_";%"/pub_";
+path_sub = path_base + "/0.5_";%"/sim_";
+path_base = "/home/yuhe/Desktop/project/3-GeometricPrimitives/RealExp/GeometricPrimitives/data";
+%path_base =  "/home/yuhe/Desktop/project/3-GeometricPrimitives/cpp/data/compdynamic_simple_folder_1";
+moving_interval = 100;
+%path_pub = path_base + "/spherization_potential_1_100_0.01_moving_";%"/pub_";
+%path_sub = path_base + "/spherization_potential_1_100_0.01_moving_";%"/sim_";
+path_pub = path_base + "/ShelfTask1Lowerpub_";
+path_sub = path_base + "/ShelfTask1Lowersim_";
+robot_pos = csvread(path_sub + "trajectory.csv");
+moving_cup = csvread(path_pub + "moving_cup.csv");
+moving_cup_down = csvread(path_pub + "moving_cup_down.csv");
+moving_drink = csvread(path_pub + "moving_drink.csv");
+moving_drink_down = csvread(path_pub + "moving_drink_down.csv");
+
+cylinder_rad_moving(1,:) = 0.005;
+cylinder_rad_moving(2,:) = 0.12;
+
+figure();
+
+%% plot trajectory
+%robot_pos = csvread(path_sub + "trajectory.csv");
+%plot_vf_robot_traj(robot_pos);
+
+%% plot workspace boundary
+%workspaceboundary = csvread(path_pub + "workspaceboundary.csv");
+%plot_vf_workspace_bound(workspaceboundary);
+
+%% plot circles
+plot_vf_sphere(path_pub + "sphere.csv", path_pub + "sphererad.csv")
+
+%% line plotting
+%plot_vf_line(path_pub + "linestart.csv", path_pub + "lineend.csv")
+
+%% plane plotting
+plot_vf_plane(path_pub + "planepoint1.csv", path_pub + "planepoint2.csv", path_pub + "planepoint3.csv", path_pub + "planepoint4.csv")
+
+%% Cube Plotting
+plot_vf_cubic(path_pub + "cubicpoint1.csv", path_pub + "cubicpoint2.csv", path_pub + "cubicpoint3.csv", path_pub + "cubicpoint4.csv", path_pub + "cubicpoint5.csv", path_pub + "cubicpoint6.csv", path_pub + "cubicpoint7.csv", path_pub + "cubicpoint8.csv" )
+
+%% Plot cylinder
+plot_vf_cylinder(path_pub + "cylinderstart.csv", path_pub + "cylinderend.csv", path_pub + "cylinderrad.csv")
+
+hold on
+
+for t = 1:size(robot_pos, 1)
+
+    if mod(t, moving_interval) ~= 0
+        continue; % Skip the rest of the loop for this iteration
+    end
+
+    %cla; %
+    
+    %% plot trajectory
+    
+    plot3(robot_pos(t,1),robot_pos(t,2),robot_pos(t,3), "r.", 'MarkerSize', 15);
+    hold on
+    
+  
+    %% Plot cylinder
+    cylinder_start_moving(1,:) = moving_cup(t,:);
+    cylinder_start_moving(2,:) = moving_drink(t,:);
+    cylinder_end_moving(1,:) = moving_cup_down(t,:);
+    cylinder_end_moving(2,:) = moving_drink_down(t,:);
+    
+    for j=1:size(cylinder_start_moving,1)
+
+        direction = cylinder_start_moving(j,:) - cylinder_end_moving(j,:);  
+        direction = direction / norm(direction);
+        circle_normal = [0, 0, 1]; 
+        rotation_axis = cross(circle_normal, direction); 
+        rotation_axis = rotation_axis / norm(rotation_axis); 
+        if isnan(norm(rotation_axis))
+            rotation_axis = [1,0,0]
+        end
+    
+        theta = acos(dot(circle_normal, direction)); 
+        R_rot = cos(theta) * eye(3) + sin(theta) * skew_symmetric(rotation_axis) + (1 - cos(theta)) * (rotation_axis' * rotation_axis);
+    
+        C = cylinder_start_moving(j,:);   % center of circle 
+        R = cylinder_rad_moving(j,:);    % Radius of circle 
+        teta=0:0.01:2*pi;
+        xc=R*cos(teta);
+        yc=R*sin(teta) ;
+        zc= zeros(size(xc)) ;
+        circle_points = [xc; yc; zc]; 
+    
+        rotated_points = R_rot * circle_points;
+        xc_rot = C(1)+ rotated_points(1, :);
+        yc_rot = C(2)+rotated_points(2, :);
+        zc_rot = C(3)+rotated_points(3, :);
+        patch(xc_rot, yc_rot, zc_rot, 'k');
+        hold on
+        plot3(C(1),C(2),C(3),'*r')
+        hold on
+    
+        
+        C = cylinder_end_moving(j,:);   % center of circle 
+        R = cylinder_rad_moving(j,:);    % Radius of circle 
+        teta=0:0.01:2*pi;
+        xc=R*cos(teta);
+        yc=R*sin(teta) ;
+        zc= zeros(size(xc)) ;
+        circle_points = [xc; yc; zc]; 
+        
+        rotated_points = R_rot * circle_points;
+        xc_rot = C(1)+ rotated_points(1, :);
+        yc_rot = C(2)+rotated_points(2, :);
+        zc_rot = C(3)+rotated_points(3, :);
+        patch(xc_rot, yc_rot, zc_rot, 'k');
+        hold on
+        plot3(C(1),C(2),C(3),'*r')
+        hold on
+    
+        % Direction vector of the line (cylinder axis)
+        line_dire = cylinder_start_moving(j,:) - cylinder_end_moving(j,:);
+        line_dire = line_dire / norm(line_dire);  % Normalize the direction vector
+        % 2. Find an orthogonal direction using the cross product
+        % If line_dire is aligned with the x-axis, use the y-axis for the cross product
+        if all(abs(line_dire) == [1, 0, 0])  % If the line direction is aligned with the x-axis
+            ortho_dire = cross(line_dire, [0, 1, 0]);  % Use the y-axis for the cross product
+        else
+            ortho_dire = cross(line_dire, [1, 0, 0]);  % Otherwise, use the x-axis
+        end
+        ortho_dire = ortho_dire / norm(ortho_dire);  % Normalize the orthogonal direction
+    
+          % 3. Move the edge lines along the orthogonal direction
+        edge_start = cylinder_start_moving(j,:) + ortho_dire * cylinder_rad_moving(j,:);
+        edge_end = cylinder_end_moving(j,:) + ortho_dire * cylinder_rad_moving(j,:);
+        
+        edge_start1 = cylinder_start_moving(j,:) + ortho_dire * cylinder_rad_moving(j,:);
+        edge_end1 = cylinder_end_moving(j,:) + ortho_dire * cylinder_rad_moving(j,:);
+        
+        edge_start2 = cylinder_start_moving(j,:) - ortho_dire * cylinder_rad_moving(j,:);
+        edge_end2 = cylinder_end_moving(j,:) - ortho_dire * cylinder_rad_moving(j,:);
+        
+        edge_start3 = cylinder_start_moving(j,:) + ortho_dire * cylinder_rad_moving(j,:);
+        edge_end3 = cylinder_end_moving(j,:) + ortho_dire * cylinder_rad_moving(j,:);
+        
+        edge_start4 = cylinder_start_moving(j,:) - ortho_dire * cylinder_rad_moving(j,:);
+        edge_end4 = cylinder_end_moving(j,:) - ortho_dire * cylinder_rad_moving(j,:);
+        
+        % 4. Create the circle (patch) and plot the cylinder edges
+        theta = 0:0.01:2*pi;  % Parameter for the circle
+        xc = cylinder_start_moving(j,1) + cylinder_rad_moving(j,:) * cos(theta);  % X-coordinates of the circle
+        yc = cylinder_start_moving(j,2) + cylinder_rad_moving(j,:) * sin(theta);  % Y-coordinates of the circle
+        zc = cylinder_start_moving(j,3) + zeros(size(xc));            % Z-coordinates of the circle (flat)
+        
+        % Plot the circle and the cylinder edges
+        %patch(xc, yc, zc, 'k');  % Plot the circle in black
+        %hold on;
+        %plot3(cylinder_start_moving(j,1)), cylinder_start_moving(j,2), cylinder_start_moving(j,3), '*r');  % Start point of the cylinder
+        %plot3(cylinder_end_moving(j,1), cylinder_end_moving(j,2), cylinder_end_moving(j,3), '*b');      % End point of the cylinder
+        
+        % Plot the edge lines
+        plot3([edge_start(1), edge_end(1)], [edge_start(2), edge_end(2)], [edge_start(3), edge_end(3)], 'k');
+        plot3([edge_start1(1), edge_end1(1)], [edge_start1(2), edge_end1(2)], [edge_start1(3), edge_end1(3)], 'k');
+        plot3([edge_start2(1), edge_end2(1)], [edge_start2(2), edge_end2(2)], [edge_start2(3), edge_end2(3)], 'k');
+        plot3([edge_start3(1), edge_end3(1)], [edge_start3(2), edge_end3(2)], [edge_start3(3), edge_end3(3)], 'k');
+        plot3([edge_start4(1), edge_end4(1)], [edge_start4(2), edge_end4(2)], [edge_start4(3), edge_end4(3)], 'k');
+    
+        
+        % % Plot the center of the circle and the cylinder center
+        % plot3(cylinder_start_moving(j,1), cylinder_start_moving(j,2), cylinder_start_moving(j,3), '*r');  % Start of the cylinder (red star)
+        % plot3(cylinder_end_moving(j,1), cylinder_end_moving(j,2), cylinder_end_moving(j,3), '*b');  % End of the cylinder (blue star)
+    
+        % for j=1:size(edge_start,1)
+        %     plot3([edge_start1(j,1), edge_end1(j,1)], [edge_start1(j,2), edge_end1(j,2)], [edge_start1(j,3), edge_end1(j,3)], "-");
+        %     hold on
+        %     plot3([edge_start2(j,1), edge_end2(j,1)], [edge_start2(j,2), edge_end2(j,2)], [edge_start2(j,3), edge_end2(j,3)], "-");
+        %     hold on
+        %     plot3([edge_start3(j,1), edge_end3(j,1)], [edge_start3(j,2), edge_end3(j,2)], [edge_start3(j,3), edge_end3(j,3)], "-");
+        %     hold on
+        %     plot3([edge_start4(j,1), edge_end4(j,1)], [edge_start4(j,2), edge_end4(j,2)], [edge_start4(j,3), edge_end4(j,3)], "-");
+        %     hold on
+        % end
+    end
+    %% primilinaries
+    %disp("iteractions")
+    axis equal;
+    %title("Path towards goal");
+    %hold off
+    grid on
+    %toc
+    hold on
+    title(['Frame: ', num2str(t)]); % 显示当前帧数
+    view(3);
+
+    alpha(.5)
+
+    %camorbit(1, 0, 'camera');
+    
+    frame = getframe(gcf); % 获取当前图形窗口的帧
+    frame_resized = imresize(frame.cdata, [560, 420]);
+    writeVideo(outputVideo, frame_resized); % 将帧写入视频文
+end
+
+
+
+%% primilinaries
+disp("iteractions")
+axis equal;
+title("Path towards goal");
+%hold off
+grid on
+toc

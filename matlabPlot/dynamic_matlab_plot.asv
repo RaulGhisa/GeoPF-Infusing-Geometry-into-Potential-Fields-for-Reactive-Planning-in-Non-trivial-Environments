@@ -1,0 +1,290 @@
+clear 
+clc
+moving_steps = 10;
+moving_interval = 100;
+%path_base = "/home/yuhe/Desktop/project/3-GeometricPrimitives/RealExp/GeometricPrimitives/data";
+path_base =  "/home/yuhe/Desktop/project/3-GeometricPrimitives/cpp/data/dynamic_folder_1";
+path_pub = path_base + "/";%"/pub_";
+path_sub = path_base + "/";%"/sim_";
+%figure();
+
+% 创建一个VideoWriter对象，设置视频文件名和帧率
+outputVideo = VideoWriter('output_video.avi', 'Uncompressed AVI');
+outputVideo.FrameRate = 30; % 设置帧率为30fps
+open(outputVideo); % 打开视频写入对象
+
+% 设置图形窗口的尺寸
+figure;
+set(gcf, 'Position', [100, 100, 560, 420]); 
+hold on;
+i_circle = 0;
+i_line = 0;
+i_plane = 0;
+i_cubic = 0;
+i_cylinder = 0;
+folderPath = path_base + "/moving";
+% List all files in the directory
+files = dir(folderPath);
+
+robot_pos = csvread(path_sub + "trajectory.csv");
+
+line_start = csvread(path_pub + "linestart.csv");
+line_end = csvread(path_pub + "lineend.csv");
+
+moving_line = line_start;
+moving_line = zeros(size(moving_line));  % Set 'moving_line' matrix to zero, preserving its size
+moving_cylinder = csvread(path_pub + "cylinderstart.csv");
+moving_cylinder = zeros(size(moving_cylinder));  % Set 'moving_line' matrix to zero, preserving its size
+
+disp(['Folder Path: ', folderPath]);
+
+cylinder_start = csvread(path_pub + "cylinderstart.csv");
+cylinder_end = csvread(path_pub + "cylinderend.csv");
+cylinder_rad = csvread(path_pub + "cylinderrad.csv");
+
+
+% Loop through each file in the directory
+for k = 1:length(files)
+    fileName = files(k).name;
+    
+    % Skip "." and ".."
+    if strcmp(fileName, '.') || strcmp(fileName, '..')
+        continue;
+    end
+    
+    % Check if the file name contains specific keywords
+    if contains(fileName, 'circle_moving')
+        i_circle = i_circle + 1;
+    elseif contains(fileName, 'line_moving')
+        i_line = i_line + 1;
+    elseif contains(fileName, 'plane_moving')
+        i_plane = i_plane + 1;
+    elseif contains(fileName, 'cubic_moving')
+        i_cubic = i_cubic + 1;
+    elseif contains(fileName, 'cylinder_moving')
+        i_cylinder = i_cylinder + 1;
+    end
+end
+
+% Initialize matrices to hold the moving object data
+moving_object_circle = NaN(moving_steps, 3 * i_circle);
+moving_object_line = NaN(moving_steps, 3 * i_line);
+moving_object_plane = NaN(moving_steps, 3 * i_plane);
+moving_object_cubic = NaN(moving_steps, 3 * i_cubic);
+moving_object_cylinder = NaN(moving_steps, 3 * i_cylinder);
+
+% Load data for circle objects
+for j = 1:i_circle
+    path_file = fullfile(folderPath, sprintf('circle_movingobject_%d.csv', j-1));
+    matrix_obj = csvread(path_file);
+    moving_object_circle(:, (j-1)*3+1:j*3) = matrix_obj;
+end
+
+% Load data for line objects
+for j = 1:i_line
+    path_file = fullfile(folderPath, sprintf('line_movingobject_%d.csv', j-1));
+    matrix_obj = csvread(path_file);
+    moving_object_line(:, (j-1)*3+1:j*3) = matrix_obj;
+end
+
+% Load data for plane objects
+for j = 1:i_plane
+    path_file = fullfile(folderPath, sprintf('plane_movingobject_%d.csv', j-1));
+    matrix_obj = csvread(path_file);
+    moving_object_plane(:, (j-1)*3+1:j*3) = matrix_obj;
+end
+
+% Load data for cubic objects
+for j = 1:i_cubic
+    path_file = fullfile(folderPath, sprintf('cubic_movingobject_%d.csv', j-1));
+    matrix_obj = csvread(path_file);
+    moving_object_cubic(:, (j-1)*3+1:j*3) = matrix_obj;
+end
+
+% Load data for cylinder objects
+for j = 1:i_cylinder
+    path_file = fullfile(folderPath, sprintf('cylinder_movingobject_%d.csv', j-1));
+    matrix_obj = csvread(path_file);
+    moving_object_cylinder(:, (j-1)*3+1:j*3) = matrix_obj;
+end
+
+disp('All files processed.');
+
+
+for t = 1:size(robot_pos, 1)
+
+    if mod(t, moving_interval) ~= 0
+        continue; % Skip the rest of the loop for this iteration
+    end
+
+    %cla; %
+    
+    %% plot trajectory
+    
+    plot3(robot_pos(t,1),robot_pos(t,2),robot_pos(t,3), "r.", 'MarkerSize', 15);
+    hold on
+
+    
+    %% plot workspace boundary
+    %workspaceboundary = csvread(path_pub + "workspaceboundary.csv");
+    %plot_vf_workspace_bound(workspaceboundary);
+    
+    %
+    % plot circles
+    %plot_vf_sphere(path_pub + "sphere.csv", path_pub + "sphererad.csv")
+    
+    %% line plotting
+    %plot_vf_line(path_pub + "linestart.csv", path_pub + "lineend.csv")
+    
+    for j=1:size(line_start,1)
+        if j <= i_line
+            if t < moving_steps * moving_interval && mod(t, moving_interval) == 0
+                moving_line(j,:) = moving_line(j,:) + moving_object_line(t/moving_interval, ((j-1)*3+1):((j-1)*3 +3)) * 0.01* 0.01
+
+            end
+        end
+        disp("moving line outside")
+        moving_line(j,:)
+
+        line_start(j,:) = line_start(j,:) + moving_line(j,:);
+        line_end(j,:) = line_end(j,:) + moving_line(j,:);
+        plot3([line_start(j,1), line_end(j,1)], [line_start(j,2), line_end(j,2)], [line_start(j,3), line_end(j,3)], "-");
+        hold on
+    end
+    
+    %% plane plotting
+    %plot_vf_plane(path_pub + "planepoint1.csv", path_pub + "planepoint2.csv", path_pub + "planepoint3.csv", path_pub + "planepoint4.csv")
+    
+    %% Cube Plotting
+    %plot_vf_cubic(path_pub + "cubicpoint1.csv", path_pub + "cubicpoint2.csv", path_pub + "cubicpoint3.csv", path_pub + "cubicpoint4.csv", path_pub + "cubicpoint5.csv", path_pub + "cubicpoint6.csv", path_pub + "cubicpoint7.csv", path_pub + "cubicpoint8.csv" )
+    
+    %% Plot cylinder
+    
+    for j=1:size(cylinder_start,1)
+        if j <= i_cylinder
+            if t < moving_steps * moving_interval && mod(t, moving_interval) == 0
+                moving_cylinder(j,:) = moving_cylinder(j,:) + moving_object_cylinder(t/moving_interval, ((j-1)*3+1):((j-1)*3 +3)) * 0.01* 0.01
+            end
+        end
+        %moving_object_cylinder(t/moving_interval, ((j-1)*3+1):((j-1)*3 +3)) * 0.01
+        disp("moving cylinder outside")
+        moving_cylinder(j,:)
+        cylinder_start(j,:) = cylinder_start(j,:)+ moving_cylinder(j,:)
+        cylinder_end(j,:) = cylinder_end(j,:)+ moving_cylinder(j,:);
+
+        direction = cylinder_start(j,:) - cylinder_end(j,:);  
+        direction = direction / norm(direction);
+        circle_normal = [0, 0, 1]; 
+        rotation_axis = cross(circle_normal, direction); 
+        rotation_axis = rotation_axis / norm(rotation_axis); 
+        theta = acos(dot(circle_normal, direction)); 
+        R_rot = cos(theta) * eye(3) + sin(theta) * skew_symmetric(rotation_axis) + (1 - cos(theta)) * (rotation_axis' * rotation_axis);
+    
+        C = cylinder_start(j,:);   % center of circle 
+        R = cylinder_rad(j,:);    % Radius of circle 
+        teta=0:0.01:2*pi;
+        xc=R*cos(teta);
+        yc=R*sin(teta) ;
+        zc= zeros(size(xc)) ;
+        circle_points = [xc; yc; zc]; 
+    
+        rotated_points = R_rot * circle_points;
+        xc_rot = C(1)+ rotated_points(1, :);
+        yc_rot = C(2)+rotated_points(2, :);
+        zc_rot = C(3)+rotated_points(3, :);
+        patch(xc_rot, yc_rot, zc_rot, 'k');
+        hold on
+        plot3(C(1),C(2),C(3),'*r')
+        hold on
+    
+        
+        C = cylinder_end(j,:);   % center of circle 
+        R = cylinder_rad(j,:);    % Radius of circle 
+        teta=0:0.01:2*pi;
+        xc=R*cos(teta);
+        yc=R*sin(teta) ;
+        zc= zeros(size(xc)) ;
+        circle_points = [xc; yc; zc]; 
+        
+        rotated_points = R_rot * circle_points;
+        xc_rot = C(1)+ rotated_points(1, :);
+        yc_rot = C(2)+rotated_points(2, :);
+        zc_rot = C(3)+rotated_points(3, :);
+        patch(xc_rot, yc_rot, zc_rot, 'k');
+        hold on
+        plot3(C(1),C(2),C(3),'*r')
+        hold on
+    
+        % Direction vector of the line (cylinder axis)
+        line_dire = cylinder_start(j,:) - cylinder_end(j,:);
+        line_dire = line_dire / norm(line_dire);  % Normalize the direction vector
+        % 2. Find an orthogonal direction using the cross product
+        % If line_dire is aligned with the x-axis, use the y-axis for the cross product
+        if all(abs(line_dire) == [1, 0, 0])  % If the line direction is aligned with the x-axis
+            ortho_dire = cross(line_dire, [0, 1, 0]);  % Use the y-axis for the cross product
+        else
+            ortho_dire = cross(line_dire, [1, 0, 0]);  % Otherwise, use the x-axis
+        end
+        ortho_dire = ortho_dire / norm(ortho_dire);  % Normalize the orthogonal direction
+    
+          % 3. Move the edge lines along the orthogonal direction
+        edge_start = cylinder_start(j,:) + ortho_dire * cylinder_rad(j,:)
+        edge_end = cylinder_end(j,:) + ortho_dire * cylinder_rad(j,:)
+        
+        edge_start1 = cylinder_start(j,:) + ortho_dire * cylinder_rad(j,:);
+        edge_end1 = cylinder_end(j,:) + ortho_dire * cylinder_rad(j,:);
+        
+        edge_start2 = cylinder_start(j,:) - ortho_dire * cylinder_rad(j,:);
+        edge_end2 = cylinder_end(j,:) - ortho_dire * cylinder_rad(j,:);
+        
+        edge_start3 = cylinder_start(j,:) + ortho_dire * cylinder_rad(j,:);
+        edge_end3 = cylinder_end(j,:) + ortho_dire * cylinder_rad(j,:);
+        
+        edge_start4 = cylinder_start(j,:) - ortho_dire * cylinder_rad(j,:);
+        edge_end4 = cylinder_end(j,:) - ortho_dire * cylinder_rad(j,:);
+        
+        % 4. Create the circle (patch) and plot the cylinder edges
+        theta = 0:0.01:2*pi;  % Parameter for the circle
+        xc = cylinder_start(j,1) + cylinder_rad(j,:) * cos(theta);  % X-coordinates of the circle
+        yc = cylinder_start(j,2) + cylinder_rad(j,:) * sin(theta);  % Y-coordinates of the circle
+        zc = cylinder_start(j,3) + zeros(size(xc));            % Z-coordinates of the circle (flat)
+        
+        % Plot the circle and the cylinder edges
+        %patch(xc, yc, zc, 'k');  % Plot the circle in black
+        %hold on;
+        %plot3(cylinder_start(j,1)), cylinder_start(j,2), cylinder_start(j,3), '*r');  % Start point of the cylinder
+        %plot3(cylinder_end(j,1), cylinder_end(j,2), cylinder_end(j,3), '*b');      % End point of the cylinder
+        
+        % Plot the edge lines
+        plot3([edge_start(1), edge_end(1)], [edge_start(2), edge_end(2)], [edge_start(3), edge_end(3)], 'k');
+        plot3([edge_start1(1), edge_end1(1)], [edge_start1(2), edge_end1(2)], [edge_start1(3), edge_end1(3)], 'k');
+        plot3([edge_start2(1), edge_end2(1)], [edge_start2(2), edge_end2(2)], [edge_start2(3), edge_end2(3)], 'k');
+        plot3([edge_start3(1), edge_end3(1)], [edge_start3(2), edge_end3(2)], [edge_start3(3), edge_end3(3)], 'k');
+        plot3([edge_start4(1), edge_end4(1)], [edge_start4(2), edge_end4(2)], [edge_start4(3), edge_end4(3)], 'k');
+    
+        hold on
+    end
+    %% primilinaries
+    %disp("iteractions")
+    axis equal;
+    %title("Path towards goal");
+    %hold off
+    grid on
+    %toc
+    hold on
+    title(['Frame: ', num2str(t)]); % 显示当前帧数
+    view(3);
+
+    %camorbit(1, 0, 'camera');
+    
+    frame = getframe(gcf); % 获取当前图形窗口的帧
+    frame_resized = imresize(frame.cdata, [560, 420]);
+    writeVideo(outputVideo, frame_resized); % 将帧写入视频文
+end
+
+
+function S = skew_symmetric(v)
+    S = [ 0, -v(3), v(2); 
+          v(3), 0, -v(1); 
+         -v(2), v(1), 0];
+end

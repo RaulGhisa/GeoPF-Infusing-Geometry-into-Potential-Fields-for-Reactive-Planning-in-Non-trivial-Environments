@@ -1,0 +1,71 @@
+clear 
+clc
+%path_base = "/home/yuhe/Desktop/project/3-GeometricPrimitives/RealExp/GeometricPrimitives/data";
+path_base =  "/home/yuhe/Desktop/project/3-GeometricPrimitives" + ...
+    "/cpp/data/tunnel_folder_1";
+path_pub = path_base + "/";%"/pub_";
+path_sub = path_base + "/";%"/sim_";
+%path_base = "/home/yuhe/Desktop/project/3-GeometricPrimitives/RealExp/GeometricPrimitives/data";
+% %path_base =  "/home/yuhe/Desktop/project/3-GeometricPrimitives/cpp/data/compdynamic_simple_folder_1";
+
+%path_base = "/home/yuhe/Desktop/project/3-GeometricPrimitives/cpp-spherization/data/line_simple_folder_1/spherization_potential_fast_1_r_0.01_"
+% %path_pub = path_base + "/spherization_potential_1_100_0.01_moving_";%"/pub_";
+% %path_sub = path_base + "/spherization_potential_1_100_0.01_moving_";%"/sim_";
+% path_pub = path_base + "/ShelfTask1Lowerpub_";
+% path_sub = path_base + "/ShelfTask1Lowersim_";
+
+figure();
+
+%% plot trajectory
+robot_pos = csvread(path_sub + "trajectory.csv");
+plot_vf_robot_traj(robot_pos, "r");
+
+robot_pos = csvread("/home/yuhe/Desktop/proje" + ...
+    "ct/3-GeometricPrimitives/cpp/data/tunnel_folder_1/spherization_" + "trajectory.csv");
+plot_vf_robot_traj(robot_pos);
+
+
+robot_pos = csvread("/home/yuhe/Desktop/proje" + ...
+    "ct/3-GeometricPrimitives/cpp/data/tunnel_folder_1/spherization_potential_fast_1_r_0.01_kp100_0.5h_trajectory.csv");
+plot_vf_robot_traj(robot_pos);
+% robot_pos = csvread("/home/yuhe/Desktop/proje" + ...
+%     "ct/3-GeometricPrimitives/cpp/data/lin" + ...
+%     "e_simple_folder_13/spherization_fast_1" + ...
+%     "_" + "trajectory.csv");
+% plot_vf_robot_traj(robot_pos);
+% 
+% 
+% robot_pos = csvread("/home/yuhe/Desktop/proje" + ...
+%     "ct/3-GeometricPrimitives/cpp/data/line_s" + ...
+%     "imple_folder_13/spherization_potential_fast_1_" + ...
+%     "r_0.01_" + "trajectory.csv");
+% plot_vf_robot_traj(robot_pos);
+
+legend("GeoPF", "CF", "PF")
+%% plot workspace boundary
+%workspaceboundary = csvread(path_pub + "workspaceboundary.csv");
+%plot_vf_workspace_bound(workspaceboundary);
+
+%% plot circles
+%plot_vf_sphere(path_pub + "sphere.csv", path_pub + "sphererad.csv")
+
+%% line plotting
+%plot_vf_line(path_pub + "linestart.csv", path_pub + "lineend.csv")
+
+%% plane plotting
+plot_vf_plane(path_pub + "planepoint1.csv", path_pub + "planepoint2.csv", path_pub + "planepoint3.csv", path_pub + "planepoint4.csv")
+
+%% Cube Plotting
+%plot_vf_cubic(path_pub + "cubicpoint1.csv", path_pub + "cubicpoint2.csv", path_pub + "cubicpoint3.csv", path_pub + "cubicpoint4.csv", path_pub + "cubicpoint5.csv", path_pub + "cubicpoint6.csv", path_pub + "cubicpoint7.csv", path_pub + "cubicpoint8.csv" )
+
+%% Plot cylinder
+%plot_vf_cylinder(path_pub + "cylinderstart.csv", path_pub + "cylinderend.csv", path_pub + "cylinderrad.csv")
+
+
+%% primilinaries
+disp("iteractions")
+axis equal;
+title("Path towards goal");
+%hold off
+grid off
+toc

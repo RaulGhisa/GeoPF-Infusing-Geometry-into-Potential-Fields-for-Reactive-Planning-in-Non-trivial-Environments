@@ -1,0 +1,132 @@
+
+%~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+function pont_to_planeSeg_force = PointToPlaneSegSphereForces(obs_center, width, plane_direction, robot_pos, robot_vel, goal, k_plane,plane_dist, k_line)
+
+points = PlanePoints(obs_center, width, plane_direction);
+obs_point1 = points(1,:);
+obs_point2 = points(2,:);
+obs_point3 = points(3,:);
+obs_point4 = points(4,:);
+
+% Function that computes the circular forces
+dist_obs = norm(PTPdist_pos_obs(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4));
+pont_to_planeSeg_force = zeros(1,3);
+
+%center_of_Plane = (obs_point4 + obs_point3 + obs_point2 + obs_point1)/4;
+%dist_obs_curr = norm(robot_pos - center_of_Plane) - 0.05;
+% define how much distance should consider force
+if dist_obs < plane_dist
+   if norm(robot_vel) ~= 0
+       dist = PointToPlanecomp_dist(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4, goal);
+       dist = dist/norm(dist);
+       pont_to_planeSeg_force = ( k_plane / dist_obs) * cross(robot_vel, cross(dist,robot_vel));
+       ortho_force = pont_to_planeSeg_force;
+
+       robot_obs = PTPdist_pos_obs(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4);
+       % robot_obs_direct = robot_obs/norm(robot_obs);
+
+       robot_goal = goal - robot_pos;
+
+       cos_theta = dot(robot_obs, robot_goal) / (norm(robot_goal)*norm(robot_obs));
+       if cos_theta == 0
+           interpoint_dist = 1;
+       else
+           inter_dist = abs(norm(robot_obs) / cos_theta);
+           interpoint = robot_pos + robot_goal/ norm(robot_goal) * inter_dist;
+           interpoint_dist = norm(PTPdist_pos_obs(interpoint, obs_point1, obs_point2, obs_point3, obs_point4));
+       end
+       
+       points = PlanePoints(obs_center, width + 0.03, plane_direction);
+       obs_point1 = points(1,:);
+       obs_point2 = points(2,:);
+       obs_point3 = points(3,:);
+       obs_point4 = points(4,:);
+
+       largest_dist = 0.08;
+
+       %if interpoint_dist <= 0 %|| distline_obs < plane_dist * 0.1
+       %    line1 = obs_point4 - obs_point2;
+       %    line2 = obs_point4 - obs_point3;
+       %    plane_n = cross(line1, line2);
+       %    plane_n = plane_n/norm(plane_n);
+       %    close_dist = PTP_closet_line_inter_dist(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4);
+       %    close_dist = close_dist/norm(close_dist);
+       %    parallel_direction = cross(plane_n, cross(plane_n, close_dist));
+       %    pont_to_planeSeg_force = ( k_plane / dist_obs) * cross(robot_vel, cross(parallel_direction,robot_vel));
+       %end
+
+       
+   
+     
+
+
+       if interpoint_dist <= 0 %|| distline_obs < plane_dist * 0.1
+           line1 = obs_point4 - obs_point2;
+           line2 = obs_point4 - obs_point3;
+           plane_n = cross(line1, line2);
+           plane_n = plane_n/norm(plane_n);
+           close_dist = PTP_closet_line_inter_dist(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4);
+           close_dist = close_dist/norm(close_dist);
+           parallel_direction = cross(plane_n, cross(plane_n, close_dist));
+
+           att_force = AttractorForces(goal, robot_pos, 0.3);
+
+           pont_to_planeSeg_force = ( k_plane / dist_obs) * cross(robot_vel, cross(parallel_direction,robot_vel))- att_force;
+
+          
+     
+       elseif 0 < interpoint_dist && interpoint_dist < largest_dist
+           att_force = AttractorForces(goal, robot_pos, 0.3);
+           line1 = obs_point4 - obs_point2;
+           line2 = obs_point4 - obs_point3;
+           plane_n = cross(line1, line2);
+           plane_n = plane_n/norm(plane_n);
+           close_dist = PTP_closet_line_inter_dist(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4);
+           close_dist = close_dist/norm(close_dist);
+           parallel_direction = cross(plane_n, cross(plane_n, close_dist));
+
+           att_force = AttractorForces(goal, robot_pos, 0.3);
+
+           pont_to_planeSeg_force = ( k_plane / dist_obs) * cross(robot_vel, cross(parallel_direction,robot_vel))- att_force;
+
+          
+
+           % Point to line edge force
+           robot_obs1 = PTLdist_pos_obs(robot_pos, obs_point1, obs_point2);
+           if robot_obs1 < 0.01
+               dist = PointToLinecomp_dist(robot_pos, obs_point1, obs_point2, goal);
+               dist = dist/norm(dist);
+               pont_to_lineSeg_force = (k_line / norm(robot_obs1)) * cross(robot_vel, cross(dist,robot_vel));
+               pont_to_planeSeg_force = (ortho_force) * interpoint_dist/largest_dist + (pont_to_planeSeg_force)* (1-interpoint_dist/largest_dist);
+           end
+    
+           robot_obs2 = PTLdist_pos_obs(robot_pos, obs_point2, obs_point3);
+           if robot_obs2 < 0.01
+               dist = PointToLinecomp_dist(robot_pos, obs_point2, obs_point3, goal);
+               dist = dist/norm(dist);
+               pont_to_lineSeg_force = (k_line / norm(robot_obs2)) * cross(robot_vel, cross(dist,robot_vel));
+               pont_to_planeSeg_force = (ortho_force) * interpoint_dist/largest_dist +  (pont_to_planeSeg_force)*(1-interpoint_dist/largest_dist);
+           end
+    
+           robot_obs3 = PTLdist_pos_obs(robot_pos, obs_point3, obs_point4);
+           if robot_obs3 < 0.01
+               dist = PointToLinecomp_dist(robot_pos, obs_point3, obs_point4, goal);
+               dist = dist/norm(dist);
+               pont_to_lineSeg_force = (k_line / norm(robot_obs3)) * cross(robot_vel, cross(dist,robot_vel));
+               pont_to_planeSeg_force = (ortho_force) * interpoint_dist/largest_dist +  (pont_to_planeSeg_force) *(1-interpoint_dist/largest_dist);
+           end
+    
+           robot_obs4 = PTLdist_pos_obs(robot_pos, obs_point4, obs_point1);
+           if robot_obs4 < 0.01
+               dist = PointToLinecomp_dist(robot_pos, obs_point4, obs_point1, goal);
+               dist = dist/norm(dist);
+               pont_to_lineSeg_force = (k_line / norm(robot_obs4)) * cross(robot_vel, cross(dist,robot_vel));
+               pont_to_planeSeg_force = (ortho_force) * interpoint_dist/largest_dist +  (pont_to_planeSeg_force) *(1-interpoint_dist/largest_dist);
+           end
+       
+           %if norm(PTPdist_pos_obs(robot_pos, obs_point1, obs_point2, obs_point3, obs_point4)) < 0.01
+           %    pont_to_planeSeg_force = pont_to_planeSeg_force - att_force;
+           %end
+       end
+   end
+end

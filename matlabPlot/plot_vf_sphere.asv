@@ -1,0 +1,9 @@
+function plot_vf_sphere(path_circle, path_rad)
+    [X,Y,Z] = sphere;
+    circles = csvread(path_circle);
+    circlesrad = csvread(path_rad);
+    for j=1:size(circles,1)
+        surf(X * circlesrad(j) + circles(j,1),Y * circlesrad(j) + circles(j,2), Z * circlesrad(j) + circles(j,3));
+        hold on
+    end
+end
