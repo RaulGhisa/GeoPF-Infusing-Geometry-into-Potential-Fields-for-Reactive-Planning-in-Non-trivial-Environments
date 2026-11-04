@@ -1,0 +1,45 @@
+# Example GeoPF scene: a wall (plane) between start and goal, plus one of
+# each other obstacle type. Run with:
+#   ./build/geopf -c examples/scene.yaml -o trajectory.csv
+#
+# Every section is optional. Each obstacle section may be a list (as here)
+# or a map with named entries (circle1:, circle2:, ... as in the original
+# GeomObstacles.yml).
+
+start: [0.0, 0.0, 0.5]
+goal:  [0.6, 0.0, 0.5]
+
+# Sphere the point must stay inside.
+workspace_boundary:
+  pos: [0.3, 0.0, 0.5]
+  rad: 0.6
+
+sphere:
+  - {pos: [0.15, 0.10, 0.50], rad: 0.03}
+
+line:
+  - {start: [0.45, -0.2, 0.40], end: [0.45, 0.2, 0.40]}
+
+# Rectangular patch; give the 4 corners in order around the edge.
+plane:
+  - points:
+      - [0.30, -0.10, 0.40]
+      - [0.30,  0.10, 0.40]
+      - [0.30,  0.10, 0.60]
+      - [0.30, -0.10, 0.60]
+
+# Box: point1-4 is one face (in order around the edge), point5-8 the
+# opposite face, with point5 opposite point1, point6 opposite point2, etc.
+cubic:
+  - points:
+      - [0.10, -0.30, 0.30]
+      - [0.20, -0.30, 0.30]
+      - [0.20, -0.20, 0.30]
+      - [0.10, -0.20, 0.30]
+      - [0.10, -0.30, 0.40]
+      - [0.20, -0.30, 0.40]
+      - [0.20, -0.20, 0.40]
+      - [0.10, -0.20, 0.40]
+
+cylinder:
+  - {start: [0.5, 0.25, 0.3], end: [0.5, 0.25, 0.7], rad: 0.03}

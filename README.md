@@ -2,6 +2,253 @@
 
 https://ieeexplore.ieee.org/document/11159155
 
+GeoPF plans a collision-free path for a point (e.g. a robot end-effector)
+from a start to a goal among geometric obstacles (spheres, line segments,
+rectangular planes, boxes and cylinders) using potential fields that are
+shaped by the obstacle geometry.
+
+- [Command-line tool](#command-line-tool): build and run `geopf`
+- [Input format](#input-format): scene and parameter files
+- [Output](#output): trajectory CSV and JSON summary
+- [Using it from Python](#using-it-from-python)
+- [Repository layout](#repository-layout)
+
+## Command-line tool
+
+### Build
+
+Requires CMake ≥ 3.18 and a C++17 compiler. Eigen 3 and yaml-cpp are used if
+installed, otherwise they are downloaded automatically at configure time
+(turn this off with `-DGEOPF_FETCH_DEPS=OFF`).
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+./build/geopf --help
+# optional: sudo cmake --install build   # installs geopf to /usr/local/bin
+```
+
+DQ Robotics and CoppeliaSim/V-REP are **not** needed for the CLI.
+
+### Run
+
+```bash
+./build/geopf -c examples/scene.yaml -c examples/params.yaml -o trajectory.csv
+```
+
+```json
+{"status":"reached_goal","success":true,"iterations":2030,"path_length":0.757669579048,
+ "min_obstacle_distance":0.0306107329543,"mean_obstacle_distance":0.272052478689,
+ "runtime_us":6888,"num_obstacles":5,"start":[0,0,0.5],"goal":[0.6,0,0.5],
+ "final_position":[0.593586316617,0,0.492338392474],"trajectory_file":"trajectory.csv"}
+```
+
+### Options
+
+| Option | Description |
+|---|---|
+| `-c, --config FILE` | Scene/parameter file, YAML or JSON. Repeatable; when several files define the same top-level key, the **last one wins**. |
+| `--start X,Y,Z` | Start position (overrides `start` in the config). |
+| `--goal X,Y,Z` | Goal position (overrides `goal`). |
+| `--k-attr V`, `--k-boundary V`, `--k-circ V`, `--k-line V`, `--k-plane V`, `--k-cubic V`, `--k-cylinder V` | Override a force gain. |
+| `--dt V` | Integration time step. Default `0.01`. |
+| `--v-max V` | Speed limit. Default `0.04`. |
+| `--mass V` | Point mass. Default `1.0`. |
+| `--goal-tolerance V` | Stop once this close to the goal. Default `0.01`. |
+| `--max-iter N` | Give up after N steps. Default `100000`. |
+| `-o, --out FILE` | Write the trajectory as CSV. |
+| `--include-trajectory` | Also put the trajectory in the JSON summary. |
+| `--dump-scene DIR` | Write the trajectory and all obstacles as CSV files with the names the [`matlabPlot/`](matlabPlot) scripts expect (`trajectory.csv`, `sphere.csv`, `planepoint1.csv`, …). |
+| `-h, --help`, `--version` | |
+
+Options also accept the `--opt=value` form. With no config file at all,
+`--start` and `--goal` are enough (planning in free space).
+
+### Exit status
+
+| Code | Meaning |
+|---|---|
+| `0` | Goal reached. |
+| `1` | Planning ran but failed: `status` is `max_iterations`, `collision` or `numerical_error`. The JSON summary is still printed. |
+| `2` | Bad usage or invalid config (message on stderr, nothing on stdout). |
+
+## Input format
+
+Everything can go in one file or be split across several (e.g. scene +
+params, as in [`examples/`](examples)). All keys are optional except `start`
+and `goal`, which can also be given on the command line. Coordinates are 3D
+`[x, y, z]`; units are whatever you use consistently (the defaults assume
+metres).
+
+### Scene
+
+```yaml
+start: [0.0, 0.0, 0.5]
+goal:  [0.6, 0.0, 0.5]
+
+workspace_boundary:          # sphere the point must stay inside
+  pos: [0.3, 0.0, 0.5]
+  rad: 0.6
+
+sphere:
+  - {pos: [0.15, 0.10, 0.50], rad: 0.03}
+  - [0.2, 0.2, 0.5]          # bare position -> radius = sphere_rad (0.01)
+
+line:                        # line segments
+  - {start: [0.45, -0.2, 0.4], end: [0.45, 0.2, 0.4]}
+
+plane:                       # rectangle; 4 corners in order around the edge
+  - points: [[0.3, -0.1, 0.4], [0.3, 0.1, 0.4], [0.3, 0.1, 0.6], [0.3, -0.1, 0.6]]
+
+cubic:                       # box, 8 corners (see below)
+  - points: [[0.1,-0.3,0.3], [0.2,-0.3,0.3], [0.2,-0.2,0.3], [0.1,-0.2,0.3],
+             [0.1,-0.3,0.4], [0.2,-0.3,0.4], [0.2,-0.2,0.4], [0.1,-0.2,0.4]]
+
+cylinder:
+  - {start: [0.5, 0.25, 0.3], end: [0.5, 0.25, 0.7], rad: 0.03}
+```
+
+**Box corners:** `point1`–`point4` are one face in order around its edge,
+`point5`–`point8` are the opposite face, with `point5` opposite `point1`,
+`point6` opposite `point2`, and so on.
+
+**Original format.** The files used by the original research code
+(`GeomObstacles.yml`, `RobotPos.yml`, `TuningParams.yml`) work unchanged:
+
+- sections can be maps with named entries (`circle: {circle1: {...}, circle2: {...}}`) instead of lists;
+- `circle` is accepted as a synonym of `sphere`;
+- `worksapce_boundary` (original spelling) is accepted as well as `workspace_boundary`;
+- corners can be given as `point1: [...]`, `point2: [...]`, … instead of `points:`;
+- cylinders can use `obs_start` / `obs_end` / `obs_rad`;
+- radii can be written as `0.03` or `[0.03]`;
+- `limit_iter` is read as `max_iter`;
+- keys the CLI doesn't use (`mockup_num`, `path`, …) are ignored.
+
+### Parameters
+
+| Key | Default | Meaning |
+|---|---|---|
+| `k_attr` | 1.0 | Pull towards the goal. |
+| `k_boundary` | 0.1 | Push from the workspace boundary. |
+| `k_circ` | 0.1 | Push from spheres. |
+| `k_line` | 0.1 | Push from line segments. |
+| `k_plane` | 0.1 | Push from planes. |
+| `k_cubic` | 0.1 | Push from boxes. |
+| `k_cylinder` | 0.1 | Push from cylinders. |
+| `dt` | 0.01 | Integration time step. |
+| `v_max` | 0.04 | Speed limit. |
+| `mass` | 1.0 | Point mass. |
+| `goal_tolerance` | 0.01 | Stop distance to the goal. |
+| `max_iter` (or `limit_iter`) | 100000 | Maximum number of steps. |
+| `sphere_rad` | 0.01 | Radius for spheres given as a bare position. |
+
+The default gains come from the reference MATLAB script; tune them for your
+scene. The obstacle forces only act within about 0.05 of an obstacle.
+
+## Output
+
+**Trajectory CSV (`-o FILE`).** One row per integration step, `x,y,z`, no
+header. The start position is not included; the last row is the final
+position.
+
+```python
+traj = numpy.loadtxt("trajectory.csv", delimiter=",", ndmin=2)   # shape (N, 3)
+```
+
+**JSON summary (stdout).** Always printed as a single line. Diagnostics from
+the planner go to stderr, so stdout is always valid JSON.
+
+| Field | Meaning |
+|---|---|
+| `status` | `reached_goal`, `max_iterations`, `collision` (the point touched or entered an obstacle) or `numerical_error` (NaN position, see limitations). |
+| `success` | `true` if `status == "reached_goal"`. |
+| `iterations` | Number of steps (= trajectory rows). |
+| `path_length` | Sum of step lengths. |
+| `min_obstacle_distance`, `mean_obstacle_distance` | Closest and average distance to the obstacles over the run, as computed by the force functions (`null` if there were no obstacles). |
+| `runtime_us` | Planning time in microseconds. |
+| `num_obstacles` | Number of obstacles, not counting the workspace boundary. |
+| `start`, `goal`, `final_position` | `[x, y, z]`. |
+| `trajectory_file` | Path given with `-o`, or `null`. |
+| `trajectory` | List of `[x, y, z]`; only with `--include-trajectory`. |
+
+### Limitations
+
+- GeoPF is a reactive planner: it can fail (`max_iterations`) in scenes with
+  local minima. Try other gains or a different start/goal.
+- If the start, the goal and the centre of an obstacle lie exactly on one
+  line, the sideways force direction is undefined and the run ends with
+  `numerical_error`. Moving the obstacle or the goal by a tiny amount avoids it.
+- When the point ends up inside an obstacle, the force functions push it in a
+  random direction, so those runs are not reproducible.
+- Obstacles are static. Moving obstacles are only supported by the original
+  `DynamicMockupAgent.cpp`.
+
+## Using it from Python
+
+[`python/geopf.py`](python/geopf.py) is a single-file wrapper that runs the
+binary with `subprocess`. It only needs the standard library; if NumPy is
+installed the trajectory comes back as an `(N, 3)` array. Copy the file into
+your project, or add `python/` to `PYTHONPATH`. It finds the binary through
+the `binary=` argument, the `GEOPF_BIN` environment variable, `geopf` on
+`PATH`, or `build/geopf` in this repository.
+
+```python
+from geopf import plan, plan_files
+
+# Scene from Python data (NumPy arrays are fine too)
+res = plan(
+    start=[0.0, 0.0, 0.5],
+    goal=[0.6, 0.0, 0.5],
+    obstacles={
+        "workspace_boundary": {"pos": [0.3, 0.0, 0.5], "rad": 0.6},
+        "sphere": [{"pos": [0.3, 0.01, 0.5], "rad": 0.05}],
+        "plane": [{"points": [[0.45, -0.1, 0.4], [0.45, 0.1, 0.4],
+                              [0.45, 0.1, 0.6], [0.45, -0.1, 0.6]]}],
+    },
+    params={"k_attr": 1.0, "k_circ": 0.1, "max_iter": 20000},
+)
+print(res.status, res.success, res.iterations, res.path_length)
+traj = res.trajectory          # (N, 3)
+
+# Scene from files, with command-line style overrides
+res = plan_files("examples/scene.yaml", "examples/params.yaml",
+                 k_attr=0.5, goal=[0.5, 0.1, 0.5])
+```
+
+`plan` and `plan_files` return a `PlanResult` whose fields match the JSON
+summary (`status`, `success`, `iterations`, `path_length`,
+`min_obstacle_distance`, `mean_obstacle_distance`, `runtime_us`,
+`trajectory`, plus `summary` with the raw JSON). A failed plan is **not** an
+exception, so check `res.success`. Invalid input raises `GeoPFError`.
+
+Without the wrapper:
+
+```python
+import json, subprocess
+p = subprocess.run(["./build/geopf", "-c", "scene.yaml", "--include-trajectory"],
+                   capture_output=True, text=True)
+if p.returncode == 2:
+    raise RuntimeError(p.stderr)
+result = json.loads(p.stdout)            # result["trajectory"] -> [[x, y, z], ...]
+```
+
+Each call starts a new process (about 1 ms plus planning time), so the CLI
+suits planning whole paths, not running inside a high-rate control loop.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `src/force_*.cpp`, `include/geometry_force.h`, `include/attr_force.h` | GeoPF force functions, one per primitive (built as the `geopf_core` library). |
+| `src/geopf_cli.cpp` | The `geopf` command-line tool. |
+| `python/geopf.py` | Python wrapper for the CLI. |
+| `examples/` | Example scene and parameter files. |
+| `src/SingleAgent.cpp`, `src/MockupAgent.cpp`, `src/HorizontalMockupAgent.cpp`, `src/DynamicMockupAgent.cpp` | Original experiment programs: single scene, batch benchmarks and moving obstacles. They need DQ Robotics, contain hard-coded paths and are not built by CMake. |
+| `matlab/` | MATLAB prototypes per primitive, some driving a Franka arm in CoppeliaSim via DQ Robotics. |
+| `matlabPlot/` | MATLAB plotting scripts for the CSV outputs (see `--dump-scene`). |
+
+## Citation
+
 
 
 Please cite: 

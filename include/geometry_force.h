@@ -1,15 +1,13 @@
 #ifndef CIRCFORCE_H
 #define CIRCFORCE_H
 #include <iostream>
-#include <eigen3/Eigen/Dense>
-#include <dqrobotics/DQ.h>
+#include <Eigen/Dense>
 #include <memory>
 #include "../include/IndexMinMax.h"
 
 
 
 using namespace Eigen;
-using namespace DQ_robotics;
 
 extern double min_dist;
 extern double ave_dist;

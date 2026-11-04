@@ -1,6 +1,6 @@
 #include "../include/geometry_force.h"
 #include <random>
-#include "../include/SingleAgent.h"
+// min_dist / ave_dist / ave_num are declared extern in geometry_force.h
 
 
 
