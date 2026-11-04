@@ -1,5 +1,9 @@
 """Thin Python wrapper around the ``geopf`` command-line planner.
 
+Passes start, goal, obstacles, and tuning parameters to the ``geopf`` binary
+as command-line arguments and reads the resulting trajectory back from stdout
+(no JSON input or temporary files required).
+
 Only the standard library is required; if NumPy is installed the trajectory
 is returned as an ``(N, 3)`` array, otherwise as a list of ``[x, y, z]``.
 
@@ -11,7 +15,7 @@ Example::
         start=[0.0, 0.0, 0.5],
         goal=[0.6, 0.0, 0.5],
         obstacles={
-            "sphere": [{"pos": [0.3, 0.0, 0.5], "rad": 0.05}],
+            "sphere": [{"pos": [0.3, 0.01, 0.5], "rad": 0.05}],
             "workspace_boundary": {"pos": [0.3, 0.0, 0.5], "rad": 0.6},
         },
         params={"k_attr": 1.0, "k_circ": 0.1},
@@ -29,12 +33,11 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
-__all__ = ["plan", "plan_files", "PlanResult", "GeoPFError", "find_binary"]
+__all__ = ["plan", "plan_files", "build_cli_args", "PlanResult", "GeoPFError", "find_binary"]
 
 
 class GeoPFError(RuntimeError):
@@ -65,7 +68,7 @@ def find_binary(binary: Optional[str] = None) -> str:
 
 
 def _run(args: Sequence[str], binary: Optional[str], timeout: Optional[float]) -> PlanResult:
-    proc = subprocess.run([find_binary(binary), *args, "--include-trajectory"],
+    proc = subprocess.run([find_binary(binary), *args],
                           capture_output=True, text=True, timeout=timeout)
     if proc.returncode not in (0, 1):
         raise GeoPFError(proc.stderr.strip() or f"geopf exited with {proc.returncode}")
@@ -89,15 +92,93 @@ def _run(args: Sequence[str], binary: Optional[str], timeout: Optional[float]) -
     )
 
 
-def _tolist(x: Any) -> Any:
-    """Convert numpy arrays / scalars (possibly nested) to plain JSON types."""
+def _flatten(x: Any) -> list[float]:
     if hasattr(x, "tolist"):
-        return x.tolist()
-    if isinstance(x, Mapping):
-        return {k: _tolist(v) for k, v in x.items()}
+        x = x.tolist()
     if isinstance(x, (list, tuple)):
-        return [_tolist(v) for v in x]
-    return x
+        out: list[float] = []
+        for item in x:
+            out.extend(_flatten(item))
+        return out
+    return [float(x)]
+
+
+def _csv(*parts: Any) -> str:
+    nums: list[float] = []
+    for p in parts:
+        nums.extend(_flatten(p))
+    return ",".join(f"{v:.12g}" for v in nums)
+
+
+def _iter_entries(section: Any) -> Iterable[Any]:
+    if isinstance(section, Mapping):
+        return section.values()
+    return section
+
+
+def build_cli_args(
+    start: Sequence[float],
+    goal: Sequence[float],
+    obstacles: Optional[Mapping[str, Any]] = None,
+    params: Optional[Mapping[str, Any]] = None,
+) -> list[str]:
+    """Build the command-line argument list for ``geopf`` from Python data."""
+    args: list[str] = ["--start", _csv(start), "--goal", _csv(goal)]
+    obs = dict(obstacles or {})
+
+    wb = obs.get("workspace_boundary") or obs.get("worksapce_boundary")
+    if wb is not None:
+        if isinstance(wb, Mapping):
+            args += ["--boundary", _csv(wb["pos"], wb["rad"])]
+        else:
+            args += ["--boundary", _csv(wb)]
+
+    for s in _iter_entries(obs.get("sphere") or obs.get("circle") or ()):
+        if isinstance(s, Mapping):
+            if "rad" in s:
+                args += ["--sphere", _csv(s["pos"], s["rad"])]
+            else:
+                args += ["--sphere", _csv(s["pos"])]
+        else:
+            args += ["--sphere", _csv(s)]
+
+    for ln in _iter_entries(obs.get("line") or ()):
+        if isinstance(ln, Mapping):
+            args += ["--line", _csv(ln["start"], ln["end"])]
+        else:
+            args += ["--line", _csv(ln)]
+
+    for pl in _iter_entries(obs.get("plane") or ()):
+        if isinstance(pl, Mapping):
+            pts = pl.get("points") or [pl[f"point{i}"] for i in range(1, 5)]
+            args += ["--plane", _csv(pts)]
+        else:
+            args += ["--plane", _csv(pl)]
+
+    for cb in _iter_entries(obs.get("cubic") or obs.get("cuboid") or ()):
+        if isinstance(cb, Mapping):
+            pts = cb.get("points") or [cb[f"point{i}"] for i in range(1, 9)]
+            args += ["--cubic", _csv(pts)]
+        else:
+            args += ["--cubic", _csv(cb)]
+
+    for cy in _iter_entries(obs.get("cylinder") or ()):
+        if isinstance(cy, Mapping):
+            st = cy.get("start", cy.get("obs_start"))
+            en = cy.get("end", cy.get("obs_end"))
+            rd = cy.get("rad", cy.get("obs_rad"))
+            args += ["--cylinder", _csv(st, en, rd)]
+        else:
+            args += ["--cylinder", _csv(cy)]
+
+    for key, val in dict(params or {}).items():
+        if key == "limit_iter":
+            key = "max_iter"
+        flag = "--" + key.replace("_", "-")
+        v = _flatten(val)[0]
+        args += [flag, str(int(v) if key == "max_iter" else v)]
+
+    return args
 
 
 def plan(start: Sequence[float], goal: Sequence[float],
@@ -105,23 +186,18 @@ def plan(start: Sequence[float], goal: Sequence[float],
          params: Optional[Mapping[str, Any]] = None,
          binary: Optional[str] = None,
          timeout: Optional[float] = None) -> PlanResult:
-    """Plan from ``start`` to ``goal``.
+    """Plan from ``start`` to ``goal`` by passing arguments to the ``geopf`` CLI.
 
-    ``obstacles`` uses the same keys as the YAML scene format
-    (``workspace_boundary``, ``sphere``, ``line``, ``plane``, ``cubic``,
-    ``cylinder``); ``params`` the same keys as params.yaml (``k_attr``,
-    ``dt``, ``max_iter``, ...). NumPy arrays are accepted anywhere.
+    ``obstacles`` accepts ``workspace_boundary``, ``sphere``, ``line``,
+    ``plane``, ``cubic``, and ``cylinder`` (either as dicts or flat coordinate
+    sequences); ``params`` accepts ``k_attr``, ``k_circ``, ``dt``, ``max_iter``,
+    etc. NumPy arrays are accepted anywhere.
     """
-    config = {"start": _tolist(start), "goal": _tolist(goal),
-              **_tolist(dict(obstacles or {})), **_tolist(dict(params or {}))}
-    # JSON is valid YAML, so the binary reads it directly.
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(config, f)
-        path = f.name
     try:
-        return _run(["-c", path], binary, timeout)
-    finally:
-        os.unlink(path)
+        args = build_cli_args(start, goal, obstacles, params)
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise GeoPFError(f"invalid scene argument: {exc}") from exc
+    return _run(args, binary, timeout)
 
 
 def plan_files(*config_files: str, binary: Optional[str] = None,
@@ -134,7 +210,7 @@ def plan_files(*config_files: str, binary: Optional[str] = None,
     for key, value in overrides.items():
         flag = "--" + key.replace("_", "-")
         if key in ("start", "goal"):
-            value = ",".join(str(v) for v in _tolist(value))
+            value = _csv(value)
         args += [flag, str(value)]
     return _run(args, binary, timeout)
 

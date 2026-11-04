@@ -1,9 +1,10 @@
 // geopf — command-line front end for the GeoPF reactive planner.
 //
-// Reads a scene (start, goal, obstacles, gains) from one or more YAML/JSON
-// files, runs the same point-mass potential-field integration as
-// MockupAgent.cpp, writes the trajectory as CSV and prints a JSON summary on
-// stdout. See README.md ("Command-line tool") for the full reference.
+// Reads a scene (start, goal, obstacles, gains) from YAML/JSON files, stdin,
+// inline text and/or per-obstacle flags, runs the same point-mass
+// potential-field integration as MockupAgent.cpp and prints the result
+// (summary + trajectory) as one line of JSON on stdout. See README.md
+// ("Command-line tool") for the full reference.
 //
 // Exit codes: 0 = goal reached, 1 = planning failed (max iterations,
 // collision or numerical error), 2 = invalid usage / configuration.
@@ -79,21 +80,8 @@ struct Params {
 
 // ------------------------------------------------------------- parsing ---
 
-Vector3d parse_vec3_string(const std::string &s, const std::string &what) {
-  std::stringstream ss(s);
-  std::string item;
-  std::vector<double> v;
-  while (std::getline(ss, item, ',')) {
-    try {
-      std::size_t used = 0;
-      v.push_back(std::stod(item, &used));
-      if (item.find_first_not_of(" \t", used) != std::string::npos) throw 0;
-    } catch (...) {
-      throw UsageError(what + ": expected x,y,z but got '" + s + "'");
-    }
-  }
-  if (v.size() != 3) throw UsageError(what + ": expected x,y,z but got '" + s + "'");
-  return Vector3d(v[0], v[1], v[2]);
+Vector3d vec3_at(const std::vector<double> &v, std::size_t i) {
+  return Vector3d(v[i], v[i + 1], v[i + 2]);
 }
 
 double parse_double_string(const std::string &s, const std::string &what) {
@@ -162,14 +150,28 @@ YAML::Node first_of(const YAML::Node &e, std::initializer_list<const char *> key
 // A stack of config files; later files override earlier ones per top-level key.
 class Config {
  public:
+  // A file path, or "-" for standard input.
   void add_file(const std::string &path) {
+    if (path == "-") {
+      if (read_stdin_) throw UsageError("standard input ('-') can only be read once");
+      read_stdin_ = true;
+      std::ostringstream ss;
+      ss << std::cin.rdbuf();
+      add_text(ss.str(), "<stdin>");
+      return;
+    }
     try {
-      YAML::Node n = YAML::LoadFile(path);
-      if (!n.IsNull() && !n.IsMap())
-        throw UsageError(path + ": top level must be a mapping");
-      nodes_.push_back(n);
+      add_node(YAML::LoadFile(path), path);
     } catch (const YAML::Exception &ex) {
       throw UsageError(path + ": " + ex.what());
+    }
+  }
+  // Inline YAML or JSON text.
+  void add_text(const std::string &text, const std::string &label) {
+    try {
+      add_node(YAML::Load(text), label);
+    } catch (const YAML::Exception &ex) {
+      throw UsageError(label + ": " + ex.what());
     }
   }
   YAML::Node get(const std::string &key) const {
@@ -184,7 +186,13 @@ class Config {
   }
 
  private:
+  void add_node(const YAML::Node &n, const std::string &label) {
+    if (!n.IsNull() && !n.IsMap())
+      throw UsageError(label + ": top level must be a mapping");
+    nodes_.push_back(n);
+  }
   std::vector<YAML::Node> nodes_;
+  bool read_stdin_ = false;
 };
 
 void read_params(const Config &cfg, Params &p) {
@@ -428,17 +436,35 @@ void print_summary(std::ostream &os, const Scene &s, const Result &r,
 
 // ----------------------------------------------------------------- cli ---
 
-const char *kUsage = R"(usage: geopf -c SCENE.yaml [-c MORE.yaml ...] [options]
+const char *kUsage = R"(usage: geopf --start X,Y,Z --goal X,Y,Z [obstacle flags] [options]
+   or: geopf -c SCENE.yaml [options]
 
-Plans a path for a point from start to goal with GeoPF potential fields.
-Config files are YAML (or JSON); later files override earlier ones per key.
+Plans a path for a point from start to goal with GeoPF potential fields and
+prints the result to stdout.
 
-input:
-  -c, --config FILE        scene/params file (repeatable)
-      --start X,Y,Z        override start position
-      --goal X,Y,Z         override goal position
-      --k-attr V           override a gain (also --k-boundary, --k-circ,
+scene input (flags — comma- or space-separated numbers):
+      --start X,Y,Z        start position (or --start X Y Z)
+      --goal X,Y,Z         goal position  (or --goal X Y Z)
+      --boundary X,Y,Z,R   workspace boundary sphere (centre, radius)
+      --sphere X,Y,Z[,R]   add a sphere (if R omitted, uses --sphere-rad)
+                                                              (repeatable)
+      --line X1,Y1,Z1,X2,Y2,Z2
+                           add a line segment                 (repeatable)
+      --plane P1,P2,P3,P4  add a rectangle: 12 numbers, 4 corners in order
+                           around the edge                    (repeatable)
+      --cubic P1,...,P8    add a box: 24 numbers, 8 corners   (repeatable)
+      --cylinder X1,Y1,Z1,X2,Y2,Z2,R
+                           add a cylinder (axis start, end, radius)
+                                                              (repeatable)
+scene input (config files / inline):
+  -c, --config FILE        YAML/JSON file, or '-' to read from stdin
+                           (repeatable; obstacle flags are added on top)
+      --scene TEXT         inline YAML/JSON text              (repeatable)
+
+parameters:
+      --k-attr V           gain overrides (also --k-boundary, --k-circ,
                            --k-line, --k-plane, --k-cubic, --k-cylinder)
+      --sphere-rad R       default sphere radius         [0.01]
       --dt V               integration step              [0.01]
       --v-max V            speed limit                   [0.04]
       --mass V             point mass                    [1.0]
@@ -446,30 +472,41 @@ input:
       --max-iter N         iteration limit               [100000]
 
 output:
-  -o, --out FILE           write trajectory CSV (one "x,y,z" row per step)
-      --include-trajectory put the trajectory in the JSON summary as well
+      --format FMT         stdout format:
+                             json  one JSON object incl. "trajectory" (default)
+                             csv   trajectory rows "x,y,z"; JSON summary goes
+                                   to stderr instead
+      --no-trajectory      leave "trajectory" out of the JSON
+  -o, --out FILE           also write the trajectory CSV to FILE
       --dump-scene DIR     write trajectory + obstacle CSVs for matlabPlot/
   -h, --help               show this help
       --version            show version
 
-A one-line JSON summary is always printed on stdout.
 exit status: 0 goal reached, 1 planning failed, 2 bad usage/config
 )";
+
+void write_traj_csv(std::ostream &os, const std::vector<Vector3d> &traj) {
+  os << std::setprecision(12);
+  for (const auto &p : traj) os << p(0) << "," << p(1) << "," << p(2) << "\n";
+}
 
 }  // namespace
 
 int main(int argc, char **argv) {
   // The force functions may print diagnostics on std::cout; keep stdout clean
-  // for the JSON summary by routing std::cout to stderr while planning.
-  std::ostream json_out(std::cout.rdbuf());
+  // for our output by routing std::cout to stderr while planning.
+  std::ostream real_stdout(std::cout.rdbuf());
   std::cout.rdbuf(std::cerr.rdbuf());
 
   try {
     Config cfg;
     Params params;
     Scene scene;
-    std::string out_path, dump_dir;
-    bool include_traj = false, have_start = false, have_goal = false, have_cfg = false;
+    Scene extra;  // obstacles given as flags
+    std::vector<Vector3d> extra_spheres_default_rad;
+    std::string out_path, dump_dir, format = "json";
+    bool include_traj = true, have_start = false, have_goal = false,
+         have_cfg = false, have_boundary_flag = false;
     std::map<std::string, double> overrides;
     long max_iter_override = -1;
 
@@ -480,6 +517,7 @@ int main(int argc, char **argv) {
         {"--k-cylinder", "k_cylinder"}, {"--dt", "dt"},
         {"--v-max", "v_max"},         {"--mass", "mass"},
         {"--goal-tolerance", "goal_tolerance"},
+        {"--sphere-rad", "sphere_rad"},
     };
 
     for (int i = 1; i < argc; ++i) {
@@ -495,15 +533,100 @@ int main(int argc, char **argv) {
         if (i + 1 >= argc) throw UsageError(a + " needs a value");
         return argv[++i];
       };
+      // Reads between min_n and max_n numbers from one comma-separated token
+      // or several space-separated tokens.
+      auto next_nums = [&](std::size_t min_n, std::size_t max_n,
+                           const std::string &form) -> std::vector<double> {
+        const std::string count_str =
+            min_n == max_n ? std::to_string(min_n)
+                           : (std::to_string(min_n) + " or " + std::to_string(max_n));
+        const std::string msg = a + ": expected " + count_str + " numbers (" + form + ")";
+        std::vector<double> v;
+        auto push_token = [&](const std::string &tok) {
+          std::stringstream ss(tok);
+          std::string item;
+          while (std::getline(ss, item, ',')) {
+            if (item.find_first_not_of(" \t") == std::string::npos) continue;
+            try {
+              std::size_t used = 0;
+              v.push_back(std::stod(item, &used));
+              if (item.find_first_not_of(" \t", used) != std::string::npos) throw 0;
+            } catch (...) {
+              throw UsageError(msg + ", got '" + tok + "'");
+            }
+          }
+        };
+        push_token(next());
+        while (v.size() < min_n && !has_inline && i + 1 < argc) {
+          push_token(argv[++i]);
+        }
+        // If min_n < max_n (e.g. --sphere X Y Z [R]), also consume optional extra numbers
+        // if the next argv token starts with a digit, '.', '+' or '-' followed by a digit/dot.
+        while (v.size() < max_n && !has_inline && i + 1 < argc) {
+          const std::string peek = argv[i + 1];
+          bool looks_numeric = false;
+          if (!peek.empty()) {
+            char c0 = peek[0];
+            if ((c0 >= '0' && c0 <= '9') || c0 == '.') looks_numeric = true;
+            else if ((c0 == '-' || c0 == '+') && peek.size() > 1 &&
+                     ((peek[1] >= '0' && peek[1] <= '9') || peek[1] == '.'))
+              looks_numeric = true;
+          }
+          if (!looks_numeric) break;
+          push_token(argv[++i]);
+        }
+        if (v.size() != min_n && v.size() != max_n)
+          throw UsageError(msg + ", got " + std::to_string(v.size()));
+        return v;
+      };
 
-      if (a == "-h" || a == "--help") { json_out << kUsage; return 0; }
-      else if (a == "--version") { json_out << "geopf " << GEOPF_VERSION << "\n"; return 0; }
+      if (a == "-h" || a == "--help") { real_stdout << kUsage; return 0; }
+      else if (a == "--version") { real_stdout << "geopf " << GEOPF_VERSION << "\n"; return 0; }
       else if (a == "-c" || a == "--config") { cfg.add_file(next()); have_cfg = true; }
-      else if (a == "--start") { scene.start = parse_vec3_string(next(), a); have_start = true; }
-      else if (a == "--goal") { scene.goal = parse_vec3_string(next(), a); have_goal = true; }
+      else if (a == "--scene") { cfg.add_text(next(), "--scene"); have_cfg = true; }
+      else if (a == "--start") {
+        scene.start = vec3_at(next_nums(3, 3, "x,y,z"), 0);
+        have_start = true;
+      } else if (a == "--goal") {
+        scene.goal = vec3_at(next_nums(3, 3, "x,y,z"), 0);
+        have_goal = true;
+      } else if (a == "--boundary") {
+        const auto v = next_nums(4, 4, "x,y,z,r");
+        extra.boundary_pos = vec3_at(v, 0);
+        extra.boundary_rad = v[3];
+        have_boundary_flag = true;
+      } else if (a == "--sphere") {
+        const auto v = next_nums(3, 4, "x,y,z[,r]");
+        if (v.size() == 4)
+          extra.spheres.push_back({vec3_at(v, 0), v[3]});
+        else
+          extra_spheres_default_rad.push_back(vec3_at(v, 0));
+      } else if (a == "--line") {
+        const auto v = next_nums(6, 6, "start x,y,z, end x,y,z");
+        extra.lines.push_back({vec3_at(v, 0), vec3_at(v, 3)});
+      } else if (a == "--plane") {
+        const auto v = next_nums(12, 12, "4 corners x,y,z");
+        Plane pl;
+        for (int k = 0; k < 4; ++k) pl.p[k] = vec3_at(v, 3 * k);
+        extra.planes.push_back(pl);
+      } else if (a == "--cubic") {
+        const auto v = next_nums(24, 24, "8 corners x,y,z");
+        Cubic c;
+        for (int k = 0; k < 8; ++k) c.p[k] = vec3_at(v, 3 * k);
+        extra.cubics.push_back(c);
+      } else if (a == "--cylinder") {
+        const auto v = next_nums(7, 7, "start x,y,z, end x,y,z, r");
+        extra.cylinders.push_back({vec3_at(v, 0), vec3_at(v, 3), v[6]});
+      }
       else if (a == "-o" || a == "--out") out_path = next();
       else if (a == "--dump-scene") dump_dir = next();
-      else if (a == "--include-trajectory") include_traj = true;
+      else if (a == "--format") {
+        format = next();
+        if (format != "json" && format != "csv")
+          throw UsageError("--format must be 'json' or 'csv'");
+      }
+      else if (a == "--no-trajectory") include_traj = false;
+      else if (a == "--include-trajectory") include_traj = true;  // default; kept for compatibility
       else if (a == "--max-iter") {
         max_iter_override = static_cast<long>(parse_double_string(next(), a));
       } else if (numeric_flags.count(a)) {
@@ -513,7 +636,7 @@ int main(int argc, char **argv) {
       }
     }
     if (!have_cfg && !(have_start && have_goal))
-      throw UsageError("nothing to plan: give -c SCENE.yaml (see --help)");
+      throw UsageError("nothing to plan: give --start/--goal, --scene or -c (see --help)");
 
     read_params(cfg, params);
     for (const auto &kv : overrides) {
@@ -530,6 +653,7 @@ int main(int argc, char **argv) {
       else if (k == "v_max") slot = &params.v_max;
       else if (k == "mass") slot = &params.mass;
       else if (k == "goal_tolerance") slot = &params.goal_tolerance;
+      else if (k == "sphere_rad") slot = &params.sphere_rad;
       *slot = kv.second;
     }
     if (max_iter_override >= 0) params.max_iter = max_iter_override;
@@ -537,16 +661,36 @@ int main(int argc, char **argv) {
       throw UsageError("dt, mass, v_max and max_iter must be positive");
 
     read_scene(cfg, params, scene, have_start, have_goal);
+    if (have_boundary_flag) {
+      scene.has_boundary = true;
+      scene.boundary_pos = extra.boundary_pos;
+      scene.boundary_rad = extra.boundary_rad;
+    }
+    auto append = [](auto &dst, const auto &src) { dst.insert(dst.end(), src.begin(), src.end()); };
+    append(scene.spheres, extra.spheres);
+    for (const auto &pos : extra_spheres_default_rad)
+      scene.spheres.push_back({pos, params.sphere_rad});
+    append(scene.lines, extra.lines);
+    append(scene.planes, extra.planes);
+    append(scene.cubics, extra.cubics);
+    append(scene.cylinders, extra.cylinders);
 
     const Result result = plan(scene, params);
 
-    if (!out_path.empty())
-      dump_section(out_path, result.trajectory,
-                   [](const Vector3d &x) { return Eigen::VectorXd(x); });
+    if (!out_path.empty()) {
+      std::ofstream f(out_path);
+      if (!f) throw std::runtime_error("cannot write '" + out_path + "'");
+      write_traj_csv(f, result.trajectory);
+    }
     if (!dump_dir.empty()) dump_scene(dump_dir, scene, result);
 
-    print_summary(json_out, scene, result, out_path, include_traj);
-    json_out.flush();
+    if (format == "csv") {
+      write_traj_csv(real_stdout, result.trajectory);
+      print_summary(std::cerr, scene, result, out_path, false);
+    } else {
+      print_summary(real_stdout, scene, result, out_path, include_traj);
+    }
+    real_stdout.flush();
     return result.status == "reached_goal" ? 0 : 1;
   } catch (const UsageError &ex) {
     std::cerr << "geopf: error: " << ex.what() << "\n";
