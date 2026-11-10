@@ -112,8 +112,21 @@ def _csv(*parts: Any) -> str:
 
 def _iter_entries(section: Any) -> Iterable[Any]:
     if isinstance(section, Mapping):
-        return section.values()
+        return list(section.values())
+    if hasattr(section, "ndim") and section.ndim == 1:
+        return [section]
+    if isinstance(section, (list, tuple)) and len(section) > 0:
+        first = section[0]
+        if isinstance(first, (int, float)) or (hasattr(first, "ndim") and first.ndim == 0):
+            return [section]
     return section
+
+
+def _get_entry(d: Mapping[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
 
 
 def build_cli_args(
@@ -126,50 +139,64 @@ def build_cli_args(
     args: list[str] = ["--start", _csv(start), "--goal", _csv(goal)]
     obs = dict(obstacles or {})
 
-    wb = obs.get("workspace_boundary") or obs.get("worksapce_boundary")
+    wb = _get_entry(obs, "workspace_boundary", "worksapce_boundary")
     if wb is not None:
         if isinstance(wb, Mapping):
             args += ["--boundary", _csv(wb["pos"], wb["rad"])]
         else:
             args += ["--boundary", _csv(wb)]
 
-    for s in _iter_entries(obs.get("sphere") or obs.get("circle") or ()):
-        if isinstance(s, Mapping):
-            if "rad" in s:
-                args += ["--sphere", _csv(s["pos"], s["rad"])]
+    spheres = _get_entry(obs, "sphere", "circle")
+    if spheres is not None:
+        for s in _iter_entries(spheres):
+            if isinstance(s, Mapping):
+                if "rad" in s:
+                    args += ["--sphere", _csv(s["pos"], s["rad"])]
+                else:
+                    args += ["--sphere", _csv(s["pos"])]
             else:
-                args += ["--sphere", _csv(s["pos"])]
-        else:
-            args += ["--sphere", _csv(s)]
+                args += ["--sphere", _csv(s)]
 
-    for ln in _iter_entries(obs.get("line") or ()):
-        if isinstance(ln, Mapping):
-            args += ["--line", _csv(ln["start"], ln["end"])]
-        else:
-            args += ["--line", _csv(ln)]
+    lines = _get_entry(obs, "line")
+    if lines is not None:
+        for ln in _iter_entries(lines):
+            if isinstance(ln, Mapping):
+                args += ["--line", _csv(ln["start"], ln["end"])]
+            else:
+                args += ["--line", _csv(ln)]
 
-    for pl in _iter_entries(obs.get("plane") or ()):
-        if isinstance(pl, Mapping):
-            pts = pl.get("points") or [pl[f"point{i}"] for i in range(1, 5)]
-            args += ["--plane", _csv(pts)]
-        else:
-            args += ["--plane", _csv(pl)]
+    planes = _get_entry(obs, "plane")
+    if planes is not None:
+        for pl in _iter_entries(planes):
+            if isinstance(pl, Mapping):
+                pts = pl.get("points")
+                if pts is None:
+                    pts = [pl[f"point{i}"] for i in range(1, 5)]
+                args += ["--plane", _csv(pts)]
+            else:
+                args += ["--plane", _csv(pl)]
 
-    for cb in _iter_entries(obs.get("cubic") or obs.get("cuboid") or ()):
-        if isinstance(cb, Mapping):
-            pts = cb.get("points") or [cb[f"point{i}"] for i in range(1, 9)]
-            args += ["--cubic", _csv(pts)]
-        else:
-            args += ["--cubic", _csv(cb)]
+    cubics = _get_entry(obs, "cubic", "cuboid")
+    if cubics is not None:
+        for cb in _iter_entries(cubics):
+            if isinstance(cb, Mapping):
+                pts = cb.get("points")
+                if pts is None:
+                    pts = [cb[f"point{i}"] for i in range(1, 9)]
+                args += ["--cubic", _csv(pts)]
+            else:
+                args += ["--cubic", _csv(cb)]
 
-    for cy in _iter_entries(obs.get("cylinder") or ()):
-        if isinstance(cy, Mapping):
-            st = cy.get("start", cy.get("obs_start"))
-            en = cy.get("end", cy.get("obs_end"))
-            rd = cy.get("rad", cy.get("obs_rad"))
-            args += ["--cylinder", _csv(st, en, rd)]
-        else:
-            args += ["--cylinder", _csv(cy)]
+    cylinders = _get_entry(obs, "cylinder")
+    if cylinders is not None:
+        for cy in _iter_entries(cylinders):
+            if isinstance(cy, Mapping):
+                st = cy.get("start") if "start" in cy else cy.get("obs_start")
+                en = cy.get("end") if "end" in cy else cy.get("obs_end")
+                rd = cy.get("rad") if "rad" in cy else cy.get("obs_rad")
+                args += ["--cylinder", _csv(st, en, rd)]
+            else:
+                args += ["--cylinder", _csv(cy)]
 
     for key, val in dict(params or {}).items():
         if key == "limit_iter":

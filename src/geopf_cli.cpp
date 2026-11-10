@@ -75,6 +75,7 @@ struct Params {
          k_plane = 0.1, k_cubic = 0.1, k_cylinder = 0.1;
   double dt = 0.01, v_max = 0.04, mass = 1.0, goal_tolerance = 0.01;
   double sphere_rad = 0.01;  // radius for spheres given as a bare [x, y, z]
+  double d_influence = 0.0;  // 0.0 means default based on scale
   long max_iter = 100000;
 };
 
@@ -203,6 +204,7 @@ void read_params(const Config &cfg, Params &p) {
       {"k_cylinder", &p.k_cylinder}, {"dt", &p.dt},
       {"v_max", &p.v_max},         {"mass", &p.mass},
       {"goal_tolerance", &p.goal_tolerance}, {"sphere_rad", &p.sphere_rad},
+      {"d_influence", &p.d_influence},
   };
   for (const auto &kv : keys)
     if (YAML::Node n = cfg.get(kv.first)) *kv.second = as_scalar(n, kv.first);
@@ -284,6 +286,18 @@ Result plan(const Scene &s, const Params &p) {
   ave_dist = 0;
   ave_num = 0;
 
+  double unit_scale = std::max(1.0, p.goal_tolerance / 0.01);
+  double eff_d_inf = (p.d_influence > 0.0) ? p.d_influence : (0.1 * unit_scale);
+  double eff_d_circ = (p.d_influence > 0.0) ? p.d_influence : (0.05 * unit_scale);
+
+  double eff_k_attr = p.k_attr * unit_scale;
+  double eff_k_boundary = p.k_boundary * unit_scale * unit_scale;
+  double eff_k_circ = p.k_circ * unit_scale * unit_scale;
+  double eff_k_line = p.k_line * unit_scale * unit_scale;
+  double eff_k_plane = p.k_plane * unit_scale * unit_scale;
+  double eff_k_cubic = p.k_cubic * unit_scale * unit_scale;
+  double eff_k_cylinder = p.k_cylinder * unit_scale * unit_scale;
+
   Vector3d robot_pos = s.start;
   Vector3d robot_vel = Vector3d::Zero();
   Vector3d acc = Vector3d::Zero();
@@ -294,28 +308,30 @@ Result plan(const Scene &s, const Params &p) {
     r.status = "reached_goal";
   }
   while (r.status.empty()) {
-    Vector3d force = attr_force(s.goal, robot_pos, p.k_attr);
+    Vector3d force = attr_force(s.goal, robot_pos, eff_k_attr);
     if (s.has_boundary)
       force += boundary_force(s.boundary_pos, s.boundary_rad, robot_pos, robot_vel,
-                              s.goal, p.k_boundary);
+                              s.goal, eff_k_boundary, eff_d_circ);
     for (const auto &o : s.spheres)
-      force += sphere_force(o.pos, o.rad, robot_pos, robot_vel, s.goal, p.k_circ);
+      force += sphere_force(o.pos, o.rad, robot_pos, robot_vel, s.goal, eff_k_circ, eff_d_circ);
     for (const auto &o : s.lines)
-      force += line_force(o.start, o.end, robot_pos, robot_vel, s.goal, p.k_line);
+      force += line_force(o.start, o.end, robot_pos, robot_vel, s.goal, eff_k_line, eff_d_circ);
     for (const auto &o : s.planes)
       force += plane_force(o.p[0], o.p[1], o.p[2], o.p[3], robot_pos, robot_vel,
-                           s.goal, p.k_plane);
+                           s.goal, eff_k_plane, eff_d_inf);
     for (const auto &o : s.cubics)
       force += cubic_force(o.p[0], o.p[1], o.p[2], o.p[3], o.p[4], o.p[5], o.p[6],
-                           o.p[7], robot_pos, robot_vel, s.goal, p.k_cubic);
+                           o.p[7], robot_pos, robot_vel, s.goal, eff_k_cubic, eff_d_inf);
     for (const auto &o : s.cylinders)
       force += cylinder_force(o.start, o.end, o.rad, robot_pos, robot_vel, s.goal,
-                              p.k_cylinder);
+                              eff_k_cylinder, eff_d_inf);
 
     acc = force / p.mass;
     robot_vel = robot_vel + acc * p.dt;
     if (robot_vel.norm() > p.v_max) robot_vel = robot_vel * p.v_max / robot_vel.norm();
-    if (e < 0.1) robot_vel = robot_vel * (10 * e);
+
+    double slow_dist = std::max(0.1, 10.0 * p.goal_tolerance);
+    if (e < slow_dist) robot_vel = robot_vel * (e / slow_dist);
 
     const Vector3d last = robot_pos;
     robot_pos = robot_pos + 0.5 * acc * p.dt * p.dt + robot_vel * p.dt;
@@ -324,6 +340,34 @@ Result plan(const Scene &s, const Params &p) {
 
     r.iterations++;
     r.trajectory.push_back(robot_pos);
+
+    // Continuous segment intersection check for planes
+    for (const auto &pl : s.planes) {
+      Vector3d n = (pl.p[1] - pl.p[0]).cross(pl.p[3] - pl.p[0]);
+      if (n.norm() > 1e-9) {
+        n.normalize();
+        double h_last = (last - pl.p[0]).dot(n);
+        double h_cur = (robot_pos - pl.p[0]).dot(n);
+        if (h_last * h_cur <= -1e-8) {
+          double alpha = h_last / (h_last - h_cur);
+          if (alpha >= 0.0 && alpha <= 1.0) {
+            Vector3d hit = last + alpha * (robot_pos - last);
+            // Check if hit point is inside quad
+            bool inside = true;
+            for (int k = 0; k < 4; ++k) {
+              Vector3d edge = pl.p[(k + 1) % 4] - pl.p[k];
+              if (edge.cross(hit - pl.p[k]).dot(n) < -1e-6) {
+                inside = false;
+                break;
+              }
+            }
+            if (inside) {
+              min_dist = -1e-5;
+            }
+          }
+        }
+      }
+    }
 
     if (!robot_pos.allFinite()) r.status = "numerical_error";
     else if (min_dist < 1.e-8) r.status = "collision";
@@ -518,6 +562,7 @@ int main(int argc, char **argv) {
         {"--v-max", "v_max"},         {"--mass", "mass"},
         {"--goal-tolerance", "goal_tolerance"},
         {"--sphere-rad", "sphere_rad"},
+        {"--d-influence", "d_influence"},
     };
 
     for (int i = 1; i < argc; ++i) {
@@ -654,6 +699,7 @@ int main(int argc, char **argv) {
       else if (k == "mass") slot = &params.mass;
       else if (k == "goal_tolerance") slot = &params.goal_tolerance;
       else if (k == "sphere_rad") slot = &params.sphere_rad;
+      else if (k == "d_influence") slot = &params.d_influence;
       *slot = kv.second;
     }
     if (max_iter_override >= 0) params.max_iter = max_iter_override;

@@ -1,90 +1,67 @@
 #include "../include/geometry_force.h"
-#include <random>
-
-Vector3d line_force(const Vector3d &obs_start, const Vector3d &obs_end, const Vector3d &robot_pos, const Vector3d &robot_vel,
-                    const Vector3d &goal, const double &k_line) {
-
-  Vector3d dist_obs = line_dist_obs(obs_start, obs_end, robot_pos);
-
-  Vector3d lin_force(0, 0, 0);
-  if (dist_obs.norm() < 0.05) {
-
-    if (robot_vel.norm() != 0) {
-        Vector3d line_goal_robot = (goal - robot_pos) / (goal - robot_pos).norm();
-        Vector3d line_robot_obs =
-          (dist_obs) / (dist_obs).norm();
-
-        Vector3d force_direction = line_robot_obs - (line_goal_robot * (line_robot_obs.transpose() * line_goal_robot));
-        force_direction = force_direction / force_direction.norm();
-
-        // if (dist_obs.norm() < 1e-10)
-        // {
-        //         std::random_device rd;  // Random seed
-        //         std::mt19937 gen(rd()); // Mersenne Twister engine
-        //         std::uniform_real_distribution<> dis(-1.0, 1.0);
-        //         for (int i = 0; i < obs_start.size(); ++i) {
-        //                 force_direction(i) = dis(gen);
-        //         }
-        //         Vector3d minus_one;
-        //         minus_one.setConstant(-1);
-        //         force_direction = minus_one + 2 * force_direction;
-        //         force_direction = force_direction /
-        //         force_direction.norm();
-        // }
-
-        lin_force = k_line / dist_obs.norm() * force_direction;
-    }
-  }
-  if (min_dist > dist_obs.norm())
-  {
-          min_dist = dist_obs.norm();
-  }
-  ave_dist = ave_dist + dist_obs.norm();
-  ave_num = ave_num + 1;
-  return lin_force;
-}
-
-
+#include <algorithm>
+#include <cmath>
 
 Vector3d line_dist_obs(const Vector3d &obs_start, const Vector3d &obs_end, const Vector3d &robot_pos) {
-
-  Vector3d line_direction = (obs_start - obs_end) / (obs_start - obs_end).norm();
-
-  Vector3d moment = obs_start.cross(line_direction);
-
-  // Robot to line perpendicular distance
-  Vector3d line_robot_to_obs_start = (robot_pos - obs_start) / (robot_pos - obs_start).norm();
-  Vector3d line_robot_to_line_ortho = (line_direction.cross(line_robot_to_obs_start)).cross(line_direction);
-  line_robot_to_line_ortho = line_robot_to_line_ortho / line_robot_to_line_ortho.norm();
-  Vector3d dist_ortho = (robot_pos.cross(line_direction) - moment).norm() * line_robot_to_line_ortho;
-
-  // Perpendicular root
-  Vector3d pp_root = robot_pos - dist_ortho;
-
-  // Robot to obs start distance
-  Vector3d dist_2 = robot_pos - obs_start;
-
-  // Robot to obs end distance
-  Vector3d dist_3 = robot_pos - obs_end;
-
-  Vector3d dist_obs(10000, 10000, 10000);
-  if ((pp_root - obs_start).norm() < (obs_end - obs_start).norm() && (pp_root - obs_end).norm() < (obs_end - obs_start).norm()) {
-
-    // if () {
-
-      dist_obs = dist_ortho;
-
-    // }
+  Vector3d ab = obs_end - obs_start;
+  double ab_sq = ab.squaredNorm();
+  if (ab_sq < 1e-12) {
+    return robot_pos - obs_start;
+  }
+  double t = (robot_pos - obs_start).dot(ab) / ab_sq;
+  Vector3d closest;
+  if (t <= 0.0) {
+    closest = obs_start;
+  } else if (t >= 1.0) {
+    closest = obs_end;
   } else {
+    closest = obs_start + t * ab;
+  }
+  return robot_pos - closest;
+}
 
-    if (dist_2.norm() <= dist_3.norm()) {
+Vector3d line_force(const Vector3d &obs_start, const Vector3d &obs_end, const Vector3d &robot_pos, const Vector3d &robot_vel,
+                    const Vector3d &goal, const double &k_line, double d_inf) {
+  Vector3d dist_obs = line_dist_obs(obs_start, obs_end, robot_pos);
+  double d_norm = dist_obs.norm();
 
-      dist_obs = dist_2;
-    } else {
+  Vector3d lin_force(0, 0, 0);
+  if (d_norm < d_inf) {
+    Vector3d d_goal = goal - robot_pos;
+    double d_goal_norm = d_goal.norm();
+    if (d_goal_norm > 1e-9) {
+      Vector3d line_goal_robot = d_goal / d_goal_norm;
+      Vector3d line_robot_obs;
+      if (d_norm > 1e-9) {
+        line_robot_obs = dist_obs / d_norm;
+      } else {
+        Vector3d ab = (obs_end - obs_start).normalized();
+        if (std::abs(ab.x()) < 0.9) line_robot_obs = ab.cross(Vector3d(1, 0, 0)).normalized();
+        else line_robot_obs = ab.cross(Vector3d(0, 1, 0)).normalized();
+      }
 
-      dist_obs = dist_3;
+      Vector3d force_direction = line_robot_obs - (line_goal_robot * (line_robot_obs.dot(line_goal_robot)));
+      if (force_direction.norm() < 1e-4) {
+        Vector3d v_perp = robot_vel - line_goal_robot * (line_goal_robot.dot(robot_vel));
+        if (v_perp.norm() > 1e-4) {
+          force_direction = v_perp.normalized();
+        } else if (std::abs(line_goal_robot.x()) < 0.9) {
+          force_direction = line_goal_robot.cross(Vector3d(1, 0, 0)).normalized();
+        } else {
+          force_direction = line_goal_robot.cross(Vector3d(0, 1, 0)).normalized();
+        }
+      } else {
+        force_direction.normalize();
+      }
+
+      lin_force = (k_line / std::max(1e-4, d_norm)) * force_direction;
     }
   }
 
-  return dist_obs;
+  if (min_dist > d_norm) {
+    min_dist = d_norm;
+  }
+  ave_dist += d_norm;
+  ave_num += 1;
+  return lin_force;
 }
