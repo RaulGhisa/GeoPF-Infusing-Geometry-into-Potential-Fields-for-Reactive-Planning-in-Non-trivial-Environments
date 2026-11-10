@@ -1,3 +1,6 @@
 build/
 __pycache__/
 *.pyc
+tests/out/
+# The GeoPF paper: https://arxiv.org/abs/2505.19688 (not redistributed here)
+paper.pdf

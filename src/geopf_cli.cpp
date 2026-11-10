@@ -23,6 +23,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -75,8 +76,18 @@ struct Params {
          k_plane = 0.1, k_cubic = 0.1, k_cylinder = 0.1;
   double dt = 0.01, v_max = 0.04, mass = 1.0, goal_tolerance = 0.01;
   double sphere_rad = 0.01;  // radius for spheres given as a bare [x, y, z]
-  double d_influence = 0.0;  // 0.0 means default based on scale
+  double d_influence = 0.0;  // 0 = default (0.05 or 0.1, times length_scale)
+  double length_scale = 1.0;  // scene units per metre (1000 for millimetres)
   long max_iter = 100000;
+  std::set<std::string> given;  // parameters set explicitly by the user
+
+  // Defaults of length parameters are in metres; convert them to scene units.
+  void apply_length_scale() {
+    if (!(length_scale > 0)) throw UsageError("length_scale must be positive");
+    if (!given.count("v_max")) v_max *= length_scale;
+    if (!given.count("goal_tolerance")) goal_tolerance *= length_scale;
+    if (!given.count("sphere_rad")) sphere_rad *= length_scale;
+  }
 };
 
 // ------------------------------------------------------------- parsing ---
@@ -204,10 +215,13 @@ void read_params(const Config &cfg, Params &p) {
       {"k_cylinder", &p.k_cylinder}, {"dt", &p.dt},
       {"v_max", &p.v_max},         {"mass", &p.mass},
       {"goal_tolerance", &p.goal_tolerance}, {"sphere_rad", &p.sphere_rad},
-      {"d_influence", &p.d_influence},
+      {"d_influence", &p.d_influence}, {"length_scale", &p.length_scale},
   };
   for (const auto &kv : keys)
-    if (YAML::Node n = cfg.get(kv.first)) *kv.second = as_scalar(n, kv.first);
+    if (YAML::Node n = cfg.get(kv.first)) {
+      *kv.second = as_scalar(n, kv.first);
+      p.given.insert(kv.first);
+    }
   if (YAML::Node n = cfg.get_any({"max_iter", "limit_iter"}))
     p.max_iter = static_cast<long>(as_scalar(n, "max_iter"));
 }
@@ -279,58 +293,81 @@ struct Result {
   double runtime_us = 0;
 };
 
+// Obstacle shapes prepared once per run (corner sorting, box frame).
+struct Prepared {
+  std::vector<Quad> planes;
+  std::vector<Box> cubics;
+  explicit Prepared(const Scene &s) {
+    for (const auto &o : s.planes) planes.push_back(make_quad(o.p[0], o.p[1], o.p[2], o.p[3]));
+    for (const auto &o : s.cubics) cubics.push_back(make_box(o.p));
+  }
+};
+
+// Smallest obstacle distance along the whole step a -> b. The samples alone
+// miss obstacles passed between two steps (walls, lines, thin boxes or a
+// large v_max); 0 means the step went through a surface.
+double step_min_dist(const Scene &s, const Prepared &g, const Vector3d &a, const Vector3d &b) {
+  double d = std::numeric_limits<double>::infinity();
+  for (const auto &o : s.spheres) d = std::min(d, line_dist_obs(a, b, o.pos).norm() - o.rad);
+  for (const auto &o : s.lines) d = std::min(d, segment_segment_distance(a, b, o.start, o.end));
+  for (const auto &q : g.planes)
+    if (segment_crosses_quad(q, a, b)) d = std::min(d, 0.0);
+  for (const auto &bx : g.cubics)
+    if (segment_hits_box(bx, a, b)) d = std::min(d, std::min(0.0, box_signed_distance(bx, b)));
+  for (const auto &o : s.cylinders)
+    if (segment_hits_cylinder(o.start, o.end, o.rad, a, b)) d = std::min(d, 0.0);
+  return d;
+}
+
 // Same integration scheme as MockupAgent.cpp.
 Result plan(const Scene &s, const Params &p) {
   Result r;
   min_dist = 1000;
   ave_dist = 0;
   ave_num = 0;
+  const Prepared geo(s);
 
-  double unit_scale = std::max(1.0, p.goal_tolerance / 0.01);
-  double eff_d_inf = (p.d_influence > 0.0) ? p.d_influence : (0.1 * unit_scale);
-  double eff_d_circ = (p.d_influence > 0.0) ? p.d_influence : (0.05 * unit_scale);
-
-  double eff_k_attr = p.k_attr * unit_scale;
-  double eff_k_boundary = p.k_boundary * unit_scale * unit_scale;
-  double eff_k_circ = p.k_circ * unit_scale * unit_scale;
-  double eff_k_line = p.k_line * unit_scale * unit_scale;
-  double eff_k_plane = p.k_plane * unit_scale * unit_scale;
-  double eff_k_cubic = p.k_cubic * unit_scale * unit_scale;
-  double eff_k_cylinder = p.k_cylinder * unit_scale * unit_scale;
+  // The paper's gains and distances are in metres. With S scene units per
+  // metre, lengths scale by S, the attraction (a force) by S and the
+  // repulsive gains (force x distance) by S^2, so a scene planned in
+  // millimetres with length_scale 1000 follows the same path as in metres.
+  const double S = p.length_scale;
+  const double d_inf = p.d_influence > 0.0 ? p.d_influence : 0.1 * S;
+  const double d_circ = p.d_influence > 0.0 ? p.d_influence : 0.05 * S;
+  const double slow_dist = 0.1 * S;
+  const double k_attr = p.k_attr * S;
+  const double S2 = S * S;
 
   Vector3d robot_pos = s.start;
   Vector3d robot_vel = Vector3d::Zero();
   Vector3d acc = Vector3d::Zero();
-  double e = 1111;  // as in the original: no slow-down on the first step
+  double e = 1111 * S;  // as in the original: no slow-down on the first step
 
   const auto t0 = std::chrono::high_resolution_clock::now();
   if ((s.goal - s.start).norm() <= p.goal_tolerance) {
     r.status = "reached_goal";
   }
   while (r.status.empty()) {
-    Vector3d force = attr_force(s.goal, robot_pos, eff_k_attr);
+    Vector3d force = attr_force(s.goal, robot_pos, k_attr);
     if (s.has_boundary)
       force += boundary_force(s.boundary_pos, s.boundary_rad, robot_pos, robot_vel,
-                              s.goal, eff_k_boundary, eff_d_circ);
+                              s.goal, p.k_boundary * S2, d_circ);
     for (const auto &o : s.spheres)
-      force += sphere_force(o.pos, o.rad, robot_pos, robot_vel, s.goal, eff_k_circ, eff_d_circ);
+      force += sphere_force(o.pos, o.rad, robot_pos, robot_vel, s.goal, p.k_circ * S2, d_circ);
     for (const auto &o : s.lines)
-      force += line_force(o.start, o.end, robot_pos, robot_vel, s.goal, eff_k_line, eff_d_circ);
-    for (const auto &o : s.planes)
-      force += plane_force(o.p[0], o.p[1], o.p[2], o.p[3], robot_pos, robot_vel,
-                           s.goal, eff_k_plane, eff_d_inf);
-    for (const auto &o : s.cubics)
-      force += cubic_force(o.p[0], o.p[1], o.p[2], o.p[3], o.p[4], o.p[5], o.p[6],
-                           o.p[7], robot_pos, robot_vel, s.goal, eff_k_cubic, eff_d_inf);
+      force += line_force(o.start, o.end, robot_pos, robot_vel, s.goal, p.k_line * S2, d_circ);
+    for (const auto &q : geo.planes)
+      force += quad_force(q, robot_pos, robot_vel, s.goal, p.k_plane * S2, d_inf,
+                          SteerEdge::NearestRobot).head<3>();
+    for (const auto &b : geo.cubics)
+      force += box_force(b, robot_pos, robot_vel, s.goal, p.k_cubic * S2, d_inf);
     for (const auto &o : s.cylinders)
       force += cylinder_force(o.start, o.end, o.rad, robot_pos, robot_vel, s.goal,
-                              eff_k_cylinder, eff_d_inf);
+                              p.k_cylinder * S2, d_inf);
 
     acc = force / p.mass;
     robot_vel = robot_vel + acc * p.dt;
     if (robot_vel.norm() > p.v_max) robot_vel = robot_vel * p.v_max / robot_vel.norm();
-
-    double slow_dist = std::max(0.1, 10.0 * p.goal_tolerance);
     if (e < slow_dist) robot_vel = robot_vel * (e / slow_dist);
 
     const Vector3d last = robot_pos;
@@ -341,33 +378,8 @@ Result plan(const Scene &s, const Params &p) {
     r.iterations++;
     r.trajectory.push_back(robot_pos);
 
-    // Continuous segment intersection check for planes
-    for (const auto &pl : s.planes) {
-      Vector3d n = (pl.p[1] - pl.p[0]).cross(pl.p[3] - pl.p[0]);
-      if (n.norm() > 1e-9) {
-        n.normalize();
-        double h_last = (last - pl.p[0]).dot(n);
-        double h_cur = (robot_pos - pl.p[0]).dot(n);
-        if (h_last * h_cur <= -1e-8) {
-          double alpha = h_last / (h_last - h_cur);
-          if (alpha >= 0.0 && alpha <= 1.0) {
-            Vector3d hit = last + alpha * (robot_pos - last);
-            // Check if hit point is inside quad
-            bool inside = true;
-            for (int k = 0; k < 4; ++k) {
-              Vector3d edge = pl.p[(k + 1) % 4] - pl.p[k];
-              if (edge.cross(hit - pl.p[k]).dot(n) < -1e-6) {
-                inside = false;
-                break;
-              }
-            }
-            if (inside) {
-              min_dist = -1e-5;
-            }
-          }
-        }
-      }
-    }
+    if (robot_pos.allFinite())
+      min_dist = std::min(min_dist, step_min_dist(s, geo, last, robot_pos));
 
     if (!robot_pos.allFinite()) r.status = "numerical_error";
     else if (min_dist < 1.e-8) r.status = "collision";
@@ -494,9 +506,10 @@ scene input (flags — comma- or space-separated numbers):
                                                               (repeatable)
       --line X1,Y1,Z1,X2,Y2,Z2
                            add a line segment                 (repeatable)
-      --plane P1,P2,P3,P4  add a rectangle: 12 numbers, 4 corners in order
-                           around the edge                    (repeatable)
-      --cubic P1,...,P8    add a box: 24 numbers, 8 corners   (repeatable)
+      --plane P1,P2,P3,P4  add a rectangle: 12 numbers, 4 corners in any
+                           order                              (repeatable)
+      --cubic P1,...,P8    add a box: 24 numbers, 8 corners in any order
+                                                              (repeatable)
       --cylinder X1,Y1,Z1,X2,Y2,Z2,R
                            add a cylinder (axis start, end, radius)
                                                               (repeatable)
@@ -514,6 +527,12 @@ parameters:
       --mass V             point mass                    [1.0]
       --goal-tolerance V   stop distance to goal         [0.01]
       --max-iter N         iteration limit               [100000]
+      --d-influence D      distance at which obstacles start to push
+                           [0.05 spheres/lines/boundary, 0.1 others]
+      --length-scale S     scene units per metre, e.g. 1000 for mm  [1]
+                           multiplies the defaults of the lengths above
+                           (including --sphere-rad) and scales the gains
+                           so the same scene in other units plans the same
 
 output:
       --format FMT         stdout format:
@@ -563,6 +582,7 @@ int main(int argc, char **argv) {
         {"--goal-tolerance", "goal_tolerance"},
         {"--sphere-rad", "sphere_rad"},
         {"--d-influence", "d_influence"},
+        {"--length-scale", "length_scale"},
     };
 
     for (int i = 1; i < argc; ++i) {
@@ -700,9 +720,12 @@ int main(int argc, char **argv) {
       else if (k == "goal_tolerance") slot = &params.goal_tolerance;
       else if (k == "sphere_rad") slot = &params.sphere_rad;
       else if (k == "d_influence") slot = &params.d_influence;
+      else if (k == "length_scale") slot = &params.length_scale;
       *slot = kv.second;
+      params.given.insert(k);
     }
     if (max_iter_override >= 0) params.max_iter = max_iter_override;
+    params.apply_length_scale();
     if (params.dt <= 0 || params.mass <= 0 || params.v_max <= 0 || params.max_iter < 1)
       throw UsageError("dt, mass, v_max and max_iter must be positive");
 

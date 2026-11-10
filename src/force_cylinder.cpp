@@ -5,6 +5,38 @@
 #include <vector>
 #include <Eigen/Dense>
 
+bool segment_hits_cylinder(const Vector3d &obs_start, const Vector3d &obs_end, double obs_rad,
+                           const Vector3d &a, const Vector3d &b) {
+  const Vector3d axis = obs_end - obs_start;
+  const double L = axis.norm();
+  const Vector3d d = b - a, w = a - obs_start;
+  if (L < 1e-12) return line_dist_obs(a, b, obs_start).norm() <= obs_rad;
+  const Vector3d u = axis / L;
+
+  // Part of the segment between the two cap planes...
+  double lo = 0.0, hi = 1.0;
+  const double s0 = w.dot(u), ds = d.dot(u);
+  if (std::abs(ds) < 1e-300) {
+    if (s0 < 0 || s0 > L) return false;
+  } else {
+    double t0 = -s0 / ds, t1 = (L - s0) / ds;
+    if (t0 > t1) std::swap(t0, t1);
+    lo = std::max(lo, t0);
+    hi = std::min(hi, t1);
+    if (lo > hi) return false;
+  }
+  // ...that is also within obs_rad of the axis: |wp + t dp|^2 <= r^2.
+  const Vector3d wp = w - s0 * u, dp = d - ds * u;
+  const double A = dp.squaredNorm(), B = 2 * wp.dot(dp), C = wp.squaredNorm() - obs_rad * obs_rad;
+  if (A < 1e-300) return C <= 0;
+  const double disc = B * B - 4 * A * C;
+  if (disc < 0) return false;
+  const double sq = std::sqrt(disc);
+  lo = std::max(lo, (-B - sq) / (2 * A));
+  hi = std::min(hi, (-B + sq) / (2 * A));
+  return lo <= hi;
+}
+
 Vector3d cylinder_force(const Vector3d &obs_start, const Vector3d &obs_end, const double &obs_rad, 
                         const Vector3d &robot_pos, const Vector3d &robot_vel,
                         const Vector3d &goal, const double &k_cylinder, double d_inf) {
@@ -75,17 +107,8 @@ Vector3d cylinder_force(const Vector3d &obs_start, const Vector3d &obs_end, cons
       if (d_norm > 1e-9) line_robot_obs = dist_obs / d_norm;
       else line_robot_obs = r_unit;
 
-      Vector3d force_direction = line_robot_obs - (line_goal_robot * (line_robot_obs.dot(line_goal_robot)));
-      if (force_direction.norm() < 1e-4) {
-        Vector3d v_perp = robot_vel - line_goal_robot * (line_goal_robot.dot(robot_vel));
-        if (v_perp.norm() > 1e-4) force_direction = v_perp.normalized();
-        else if (std::abs(line_goal_robot.x()) < 0.9) force_direction = line_goal_robot.cross(Vector3d(1, 0, 0)).normalized();
-        else force_direction = line_goal_robot.cross(Vector3d(0, 1, 0)).normalized();
-      } else {
-        force_direction.normalize();
-      }
-
-      cylin_force = (k_cylinder / std::max(1e-4, d_norm)) * force_direction;
+      cylin_force = (k_cylinder / std::max(1e-4, d_norm)) *
+                    deflection_dir(line_robot_obs, line_goal_robot, robot_vel);
 
       // Cap intersection check: does path to goal hit either cap disk?
       if (t < 0.0) {

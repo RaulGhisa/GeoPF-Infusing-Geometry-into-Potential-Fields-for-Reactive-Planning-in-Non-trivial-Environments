@@ -77,8 +77,8 @@ Numbers in obstacle/position flags can be comma-separated (`--start 0,0,0.5`) or
 | `--boundary X,Y,Z,R` | Workspace boundary sphere (centre `X,Y,Z`, radius `R`). |
 | `--sphere X,Y,Z[,R]` | Add a sphere obstacle (repeatable). If `R` is omitted, uses `--sphere-rad`. |
 | `--line X1,Y1,Z1,X2,Y2,Z2` | Add a line segment obstacle (repeatable). |
-| `--plane P1,P2,P3,P4` | Add a rectangular plane: 12 numbers (`X1,Y1,Z1,...,X4,Y4,Z4`), 4 corners in order around the perimeter (repeatable). |
-| `--cubic P1,...,P8` | Add a box: 24 numbers, 8 corners (`point1..4` one face, `point5..8` opposite face; repeatable). |
+| `--plane P1,P2,P3,P4` | Add a rectangular plane: 12 numbers (`X1,Y1,Z1,...,X4,Y4,Z4`), the 4 corners in any order (repeatable). |
+| `--cubic P1,...,P8` | Add a box: 24 numbers, the 8 corners in any order (repeatable; see [box corners](#scene)). |
 | `--cylinder X1,Y1,Z1,X2,Y2,Z2,R` | Add a cylinder (axis start, axis end, radius; repeatable). |
 | `-c, --config FILE` | Scene/parameter file (YAML or JSON), or `-` for stdin. Repeatable; obstacle flags are added on top. |
 | `--scene TEXT` | Inline YAML/JSON string (repeatable). |
@@ -89,6 +89,8 @@ Numbers in obstacle/position flags can be comma-separated (`--start 0,0,0.5`) or
 | `--mass V` | Point mass. Default `1.0`. |
 | `--goal-tolerance V` | Stop once this close to the goal. Default `0.01`. |
 | `--max-iter N` | Give up after N steps. Default `100000`. |
+| `--d-influence D` | Distance within which obstacles push. Default `0.05` for spheres, lines and the boundary, `0.1` for planes, boxes and cylinders (times `--length-scale`). |
+| `--length-scale S` | Scene units per metre, e.g. `1000` for a scene in millimetres. Default `1`. See [units](#units). |
 | `--format json\|csv` | `stdout` format: `json` (default: single-line JSON with `"trajectory"`) or `csv` (`x,y,z` rows on `stdout`, JSON summary on `stderr`). |
 | `--no-trajectory` | Omit `"trajectory"` from the JSON output on `stdout`. |
 | `-o, --out FILE` | Also write the trajectory as CSV to `FILE`. |
@@ -110,8 +112,8 @@ Options also accept the `--opt=value` form. With no obstacles, `--start` and `--
 Everything can go in one file or be split across several (e.g. scene +
 params, as in [`examples/`](examples)). All keys are optional except `start`
 and `goal`, which can also be given on the command line. Coordinates are 3D
-`[x, y, z]`; units are whatever you use consistently (the defaults assume
-metres).
+`[x, y, z]` in metres, or in other units together with `length_scale`
+(see [units](#units)).
 
 ### Scene
 
@@ -130,7 +132,7 @@ sphere:
 line:                        # line segments
   - {start: [0.45, -0.2, 0.4], end: [0.45, 0.2, 0.4]}
 
-plane:                       # rectangle; 4 corners in order around the edge
+plane:                       # rectangle; 4 corners in any order
   - points: [[0.3, -0.1, 0.4], [0.3, 0.1, 0.4], [0.3, 0.1, 0.6], [0.3, -0.1, 0.6]]
 
 cubic:                       # box, 8 corners (see below)
@@ -141,9 +143,11 @@ cylinder:
   - {start: [0.5, 0.25, 0.3], end: [0.5, 0.25, 0.7], rad: 0.03}
 ```
 
-**Box corners:** `point1`–`point4` are one face in order around its edge,
-`point5`–`point8` are the opposite face, with `point5` opposite `point1`,
-`point6` opposite `point2`, and so on.
+**Corner order.** Rectangle corners can be in any order (around the edge, Z
+order, ...). Box corners can also be in any order, as long as they are the 8
+corners of a rectangular box; the original GeoPF order is `point1`–`point4`
+one face in order around its edge and `point5`–`point8` the opposite face,
+with `point5` opposite `point1`, `point6` opposite `point2`, and so on.
 
 **Original format.** The files used by the original research code
 (`GeomObstacles.yml`, `RobotPos.yml`, `TuningParams.yml`) work unchanged:
@@ -174,9 +178,23 @@ cylinder:
 | `goal_tolerance` | 0.01 | Stop distance to the goal. |
 | `max_iter` (or `limit_iter`) | 100000 | Maximum number of steps. |
 | `sphere_rad` | 0.01 | Radius for spheres given as a bare position. |
+| `d_influence` | 0.05 / 0.1 | Distance within which obstacles push: 0.05 for spheres, lines and the boundary, 0.1 for planes, boxes and cylinders. |
+| `length_scale` | 1 | Scene units per metre (see below). |
 
-The default gains come from the reference MATLAB script; tune them for your
-scene. The obstacle forces only act within about 0.05 of an obstacle.
+The default gains are the paper's (`k_attr = 1`, `k = 0.1` for every
+obstacle); tune them for your scene.
+
+#### Units
+
+The gains and distances above are for scenes in metres. For a scene in other
+units, set `length_scale` to the number of scene units per metre (`1000` for
+millimetres). The planner then scales the defaults of `v_max`,
+`goal_tolerance`, `sphere_rad` and `d_influence` by it, the attraction gain by
+it and the obstacle gains by its square, so the scene plans the same path as
+it would in metres. Values you set explicitly for `v_max`, `goal_tolerance`,
+`sphere_rad` and `d_influence` are taken as scene units; gains are always the
+metre values. Without `length_scale`, a millimetre scene is planned with
+metre-sized influence distances and usually fails.
 
 ## Output
 
@@ -199,7 +217,7 @@ traj = numpy.loadtxt("trajectory.csv", delimiter=",", ndmin=2)   # shape (N, 3)
 | `success` | `true` if `status == "reached_goal"`. |
 | `iterations` | Number of steps (= trajectory rows). |
 | `path_length` | Sum of step lengths. |
-| `min_obstacle_distance`, `mean_obstacle_distance` | Closest and average distance to the obstacles over the run, as computed by the force functions (`null` if there were no obstacles). |
+| `min_obstacle_distance`, `mean_obstacle_distance` | Closest and average distance to the obstacles over the run (`null` if there were no obstacles). The minimum also covers the path between steps: it is `0` when a step went through a surface and negative inside a sphere or box. The workspace boundary is not included. |
 | `runtime_us` | Planning time in microseconds. |
 | `num_obstacles` | Number of obstacles, not counting the workspace boundary. |
 | `start`, `goal`, `final_position` | `[x, y, z]`. |
@@ -210,11 +228,12 @@ traj = numpy.loadtxt("trajectory.csv", delimiter=",", ndmin=2)   # shape (N, 3)
 
 - GeoPF is a reactive planner: it can fail (`max_iterations`) in scenes with
   local minima. Try other gains or a different start/goal.
-- If the start, the goal and the centre of an obstacle lie exactly on one
-  line, the sideways force direction is undefined and the run ends with
-  `numerical_error`. Moving the obstacle or the goal by a tiny amount avoids it.
-- When the point ends up inside an obstacle, the force functions push it in a
-  random direction, so those runs are not reproducible.
+- Collisions are checked along each whole step, so going through a wall,
+  line, thin box or thin cylinder between two steps ends the run with
+  `collision`. With large gains (e.g. a strong `k_attr`) the attraction can
+  overpower an obstacle; the run then stops with `collision`.
+- The workspace boundary is a soft limit: leaving it does not end the run, it
+  pulls the point back in (a start just outside it is fine).
 - Obstacles are static. Moving obstacles are only supported by the original
   `DynamicMockupAgent.cpp`.
 
@@ -225,7 +244,8 @@ traj = numpy.loadtxt("trajectory.csv", delimiter=",", ndmin=2)   # shape (N, 3)
 ```python
 from geopf import plan, plan_files
 
-# Scene passed as CLI flags under the hood (dicts or flat coordinate lists/arrays work)
+# Scene passed as CLI flags under the hood. Each obstacle can be a dict, a flat
+# list of numbers or a nested list / NumPy array (e.g. a (4, 3) array for a plane).
 res = plan(
     start=[0.0, 0.0, 0.5],
     goal=[0.6, 0.0, 0.5],
@@ -275,6 +295,7 @@ suits planning whole paths, not running inside a high-rate control loop.
 | `src/geopf_cli.cpp` | The `geopf` command-line tool. |
 | `python/geopf.py` | Python wrapper for the CLI. |
 | `examples/` | Example scene and parameter files. |
+| `tests/` | Benchmark scenes with an independent geometry check (`run_scenes.py`, see [`tests/REPORT.md`](tests/REPORT.md)) and wrapper tests. |
 | `src/SingleAgent.cpp`, `src/MockupAgent.cpp`, `src/HorizontalMockupAgent.cpp`, `src/DynamicMockupAgent.cpp` | Original experiment programs: single scene, batch benchmarks and moving obstacles. They need DQ Robotics, contain hard-coded paths and are not built by CMake. |
 | `matlab/` | MATLAB prototypes per primitive, some driving a Franka arm in CoppeliaSim via DQ Robotics. |
 | `matlabPlot/` | MATLAB plotting scripts for the CSV outputs (see `--dump-scene`). |

@@ -3,17 +3,21 @@ with independent geometry.
 
     uv run --no-project --with numpy --with matplotlib python tests/run_scenes.py [--plot] [--random N]
 
-Writes:
-  examples/scenes/<name>.json   scene files usable with `geopf -c`
-  tests/out/<name>.csv          planned trajectories
-  tests/out/<name>.png          3D plots (with --plot)
-  tests/out/report.md           summary table
+Writes (all under tests/out/, which git ignores):
+  scenes/<name>.json   scene files usable with `geopf -c`
+  <name>.csv           planned trajectories
+  <name>.png           3D plots (with --plot)
+  report.md            summary table
+
+Exits with status 1 if any scene's verdict differs from the expected one
+(PASS unless scenes.EXPECTED says otherwise).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,11 +28,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from geometry import verify  # noqa: E402
-from scenes import SCENES, box  # noqa: E402
+from scenes import EXPECTED, SCENES, box  # noqa: E402
 
-BIN = ROOT / "build" / "geopf"
+BIN = Path(os.environ.get("GEOPF_BIN", ROOT / "build" / "geopf"))
 OUT = HERE / "out"
-SCENE_DIR = ROOT / "examples" / "scenes"
+SCENE_DIR = OUT / "scenes"
 
 
 def run(scene, params, max_iter=30000):
@@ -53,6 +57,8 @@ def classify(summ, ver):
         return "FALSE_SUCCESS"          # planner says success but path hits obstacle
     if rep == "collision" and really_ok:
         return "FALSE_COLLISION"
+    if rep == "collision":
+        return "COLLISION"              # reported and confirmed
     return "FAIL"
 
 
@@ -131,6 +137,7 @@ def main():
     SCENE_DIR.mkdir(parents=True, exist_ok=True)
 
     rows = []
+    mismatches = []
     for name, (desc, scene, params) in SCENES.items():
         if a.only and a.only not in name:
             continue
@@ -140,14 +147,18 @@ def main():
                                                        "min_dist": {}, "final_err": None}
         np.savetxt(OUT / f"{name}.csv", traj, delimiter=",", fmt="%.9g")
         verdict = classify(summ, ver) if "iterations" in summ else "CLI_ERROR"
-        md = min(ver["min_dist"].values()) if ver["min_dist"] else float("nan")
-        rows.append((name, verdict, summ["status"], summ.get("iterations"), md,
+        expected = EXPECTED.get(name, "PASS")
+        if verdict != expected:
+            mismatches.append(name)
+        obstacle_d = [v for k, v in ver["min_dist"].items() if k != "boundary"]
+        md = min(obstacle_d) if obstacle_d else float("nan")
+        rows.append((name, verdict, expected, summ["status"], summ.get("iterations"), md,
                      summ.get("min_obstacle_distance"), ver["final_err"],
                      ",".join(ver["penetrated"] + ver["crossed"]) or "-", desc))
         if a.plot:
             plot(name, desc, scene, traj, OUT / f"{name}.png")
 
-    hdr = ("scene", "verdict", "reported", "iters", "true_min_d", "reported_min_d",
+    hdr = ("scene", "verdict", "expected", "reported", "iters", "true_min_d", "reported_min_d",
            "final_err", "hit", "description")
     fmt = lambda v: f"{v:.4g}" if isinstance(v, float) else str(v)
     lines = ["| " + " | ".join(hdr) + " |", "|" + "---|" * len(hdr)]
@@ -164,10 +175,13 @@ def main():
                   "", "| verdict | reported status | count |", "|---|---|---|"]
         lines += [f"| {k[0]} | {k[1]} | {c} |" for k, c in sorted(stats.items())]
 
+    if mismatches:
+        lines += ["", "**Unexpected verdicts:** " + ", ".join(mismatches)]
     report = "\n".join(lines)
     (OUT / "report.md").write_text(report + "\n")
     print(report)
+    return 1 if mismatches else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

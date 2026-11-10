@@ -110,16 +110,33 @@ def _csv(*parts: Any) -> str:
     return ",".join(f"{v:.12g}" for v in nums)
 
 
-def _iter_entries(section: Any) -> Iterable[Any]:
+_OBSTACLE_KEYS = {"pos", "rad", "start", "end", "points", "point1",
+                  "obs_start", "obs_end", "obs_rad"}
+
+
+def _iter_entries(section: Any, sizes: tuple[int, ...]) -> Iterable[Any]:
+    """Split an obstacle section into entries.
+
+    ``sizes`` is how many numbers one obstacle has (e.g. 12 for a plane).
+    A section holding exactly that many numbers is a single obstacle, whether
+    flat, nested (``[[x, y, z], ...]``) or a NumPy array of any shape;
+    anything else is a list (or array) of obstacles along its first axis.
+    """
     if isinstance(section, Mapping):
-        return list(section.values())
-    if hasattr(section, "ndim") and section.ndim == 1:
-        return [section]
-    if isinstance(section, (list, tuple)) and len(section) > 0:
-        first = section[0]
-        if isinstance(first, (int, float)) or (hasattr(first, "ndim") and first.ndim == 0):
+        if _OBSTACLE_KEYS & set(section):         # one obstacle given as a dict
             return [section]
-    return section
+        return list(section.values())             # named entries: {"circle1": {...}}
+    if hasattr(section, "tolist"):
+        section = section.tolist()
+    if not isinstance(section, (list, tuple)):
+        return [section]
+    if not any(isinstance(item, Mapping) for item in section):
+        try:
+            if len(_flatten(section)) in sizes:
+                return [section]
+        except (TypeError, ValueError):
+            pass
+    return [s for s in section if not (isinstance(s, (list, tuple)) and len(s) == 0)]
 
 
 def _get_entry(d: Mapping[str, Any], *keys: str) -> Any:
@@ -148,7 +165,7 @@ def build_cli_args(
 
     spheres = _get_entry(obs, "sphere", "circle")
     if spheres is not None:
-        for s in _iter_entries(spheres):
+        for s in _iter_entries(spheres, (3, 4)):
             if isinstance(s, Mapping):
                 if "rad" in s:
                     args += ["--sphere", _csv(s["pos"], s["rad"])]
@@ -159,7 +176,7 @@ def build_cli_args(
 
     lines = _get_entry(obs, "line")
     if lines is not None:
-        for ln in _iter_entries(lines):
+        for ln in _iter_entries(lines, (6,)):
             if isinstance(ln, Mapping):
                 args += ["--line", _csv(ln["start"], ln["end"])]
             else:
@@ -167,7 +184,7 @@ def build_cli_args(
 
     planes = _get_entry(obs, "plane")
     if planes is not None:
-        for pl in _iter_entries(planes):
+        for pl in _iter_entries(planes, (12,)):
             if isinstance(pl, Mapping):
                 pts = pl.get("points")
                 if pts is None:
@@ -178,7 +195,7 @@ def build_cli_args(
 
     cubics = _get_entry(obs, "cubic", "cuboid")
     if cubics is not None:
-        for cb in _iter_entries(cubics):
+        for cb in _iter_entries(cubics, (24,)):
             if isinstance(cb, Mapping):
                 pts = cb.get("points")
                 if pts is None:
@@ -189,7 +206,7 @@ def build_cli_args(
 
     cylinders = _get_entry(obs, "cylinder")
     if cylinders is not None:
-        for cy in _iter_entries(cylinders):
+        for cy in _iter_entries(cylinders, (7,)):
             if isinstance(cy, Mapping):
                 st = cy.get("start") if "start" in cy else cy.get("obs_start")
                 en = cy.get("end") if "end" in cy else cy.get("obs_end")

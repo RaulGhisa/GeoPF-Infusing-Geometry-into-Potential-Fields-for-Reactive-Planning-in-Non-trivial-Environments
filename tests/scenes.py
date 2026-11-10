@@ -1,6 +1,7 @@
 """Example GeoPF scenes, each targeting one behaviour of the planner.
 
-`SCENES` maps a name to (description, scene dict, extra params). Scene dicts
+`SCENES` maps a name to (description, scene dict, extra params) and
+`EXPECTED` gives the verdict for scenes that should not PASS. Scene dicts
 use the same keys as the CLI's YAML/JSON input, so they can be written out
 with json.dump and fed to `geopf -c`.
 """
@@ -189,11 +190,11 @@ SCENES = {
          "plane": [{"points": [[0.3, -0.1, 0.4], [0.3, 0.1, 0.4], [0.3, -0.1, 0.6], [0.3, 0.1, 0.6]]}]},
         {}),
 
-    # ---------------------------------------------------------- units with rescaled params
-    "millimetres_sphere_scaled_params": (
-        "mm scene with v_max/goal_tolerance scaled x1000 (gains/influence radii are not scalable)",
+    # ---------------------------------------------------------- units with length_scale
+    "millimetres_sphere_length_scale": (
+        "millimetres_sphere with length_scale 1000: same path as sphere_offset_readme, x1000",
         scale_scene({"start": S, "goal": G, "sphere": [{"pos": [0.3, 0.01, 0.5], "rad": 0.05}]}, 1000),
-        {"v_max": 40, "goal_tolerance": 10}),
+        {"length_scale": 1000}),
 
     # ---------------------------------------------------------- local minima
     "concave_cup": (
@@ -202,4 +203,48 @@ SCENES = {
          "plane": [rect([0.35, 0, 0.5], [0, 0.1, 0], [0, 0, 0.1]),
                    rect([0.25, 0.1, 0.5], [0.1, 0, 0], [0, 0, 0.1]),
                    rect([0.25, -0.1, 0.5], [0.1, 0, 0], [0, 0, 0.1])]}, {}),
+
+    # ---------------------------------------------------------- regressions (code review)
+    "wall_strong_attraction": (
+        "2x2 m wall, k_attr 5: attraction wins and the point goes through (must be reported)",
+        {"start": S, "goal": G,
+         "plane": [rect([0.3, 0, 0.5], [0, 1, 0], [0, 0, 1])]}, {"k_attr": 5}),
+    "wall_zorder_strong_attraction": (
+        "same wall with corners in Z order, k_attr 20 (crossing must be reported)",
+        {"start": [1e-4, 0, 0.5], "goal": G,
+         "plane": [{"points": [[.3, -1, -.5], [.3, 1, -.5], [.3, -1, 1.5], [.3, 1, 1.5]]}]},
+        {"k_attr": 20}),
+    "box_steer_toward_goal": (
+        "box face blocks the path: steer across the edge nearest the goal",
+        {"start": [0.3, -0.03, 0.7], "goal": [0.3, 0.1, 0.45], "cubic": [BOX]}, {}),
+    "box_binary_order_from_above": (
+        "box in x,y,z bit order approached from above",
+        {"start": [0.32, 0.02, 0.8], "goal": [0.32, 0.02, 0.2],
+         "cubic": [{"points": [[0.3 + a, 0.0 + b, 0.5 + c] for a in (-.05, .05)
+                               for b in (-.05, .05) for c in (-.05, .05)]}]}, {}),
+    "line_through_fast": (
+        "vertical bar on the path, tiny k_line, large steps (pass-through must be reported)",
+        {"start": [0.0013, 0, 0.5], "goal": G,
+         "line": [{"start": [0.3, 0, 0.3], "end": [0.3, 0, 0.7]}]},
+        {"k_line": 1e-6, "v_max": 0.5, "k_attr": 50}),
+    "thin_box_fast": (
+        "4 mm box, v_max 2 m/s: steps jump over it (must be reported)",
+        {"start": S, "goal": G, "cubic": [box(BOX_C, [0.004, 0.004, 0.004])]},
+        {"v_max": 2, "k_attr": 50}),
+    "thin_cylinder_fast": (
+        "3 mm pole, v_max 3 m/s: steps jump over it (must be reported)",
+        {"start": S, "goal": G,
+         "cylinder": [{"start": [0.3, 0, 0.3], "end": [0.3, 0, 0.7], "rad": 0.003}]},
+        {"v_max": 3, "k_attr": 50}),
+}
+
+# Expected verdict for scenes that should not simply PASS. COLLISION means
+# the planner reported a collision and the independent check agrees.
+EXPECTED = {
+    "millimetres_sphere": "FAIL",          # mm scene without length_scale
+    "wall_strong_attraction": "COLLISION",
+    "wall_zorder_strong_attraction": "COLLISION",
+    "line_through_fast": "COLLISION",
+    "thin_box_fast": "COLLISION",
+    "thin_cylinder_fast": "COLLISION",
 }

@@ -1,87 +1,140 @@
 #include "../include/geometry_force.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <vector>
 #include <Eigen/Dense>
 
-Vector3d cubic_force(const Vector3d &obs1, const Vector3d &obs2, const Vector3d &obs3, const Vector3d &obs4, 
-                    const Vector3d &obs5, const Vector3d &obs6, const Vector3d &obs7, const Vector3d &obs8, 
+Box make_box(const Vector3d (&c)[8]) {
+  // From corner c[0], find three mutually perpendicular edges e0, e1, e2 such
+  // that c[0] + any 0/1 combination of them is one of the corners. Trying the
+  // GeoPF order first (corner2, corner4, corner5) keeps such input unchanged.
+  Vector3d v[8];
+  double scale = 0;
+  for (int i = 0; i < 8; ++i) {
+    v[i] = c[i] - c[0];
+    scale = std::max(scale, v[i].norm());
+  }
+  const double tol = 1e-4 * scale;  // loose enough for float32 exports
+  auto perp = [](const Vector3d &a, const Vector3d &b) {
+    return std::abs(a.dot(b)) <= 1e-4 * a.norm() * b.norm();
+  };
+  auto find_corner = [&](const Vector3d &x) {
+    for (int i = 0; i < 8; ++i)
+      if ((c[i] - x).norm() <= tol) return i;
+    return -1;
+  };
+
+  std::vector<std::array<int, 3>> triples = {{1, 3, 4}};
+  for (int i = 1; i < 8; ++i)
+    for (int j = i + 1; j < 8; ++j)
+      for (int k = j + 1; k < 8; ++k) triples.push_back({i, j, k});
+
+  // (e0, e1, e2) multiples of each GeoPF corner.
+  static const int kCombo[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                                   {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+  Box b;
+  bool found = false;
+  for (const auto &t : triples) {
+    const Vector3d e[3] = {v[t[0]], v[t[1]], v[t[2]]};
+    if (e[0].norm() <= tol || e[1].norm() <= tol || e[2].norm() <= tol) continue;
+    if (!perp(e[0], e[1]) || !perp(e[0], e[2]) || !perp(e[1], e[2])) continue;
+    bool ok = true;
+    for (int m = 0; m < 8 && ok; ++m) {
+      const int idx = find_corner(c[0] + kCombo[m][0] * e[0] + kCombo[m][1] * e[1] +
+                                  kCombo[m][2] * e[2]);
+      if (idx < 0) ok = false;
+      else b.corner[m] = c[idx];
+    }
+    if (ok) { found = true; break; }
+  }
+  if (!found) {
+    // Not a rectangular box: fall back to taking the corners as given.
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      std::cerr << "geopf: warning: cubic corners do not form a rectangular box; "
+                   "using them in the given order\n";
+    }
+    for (int m = 0; m < 8; ++m) b.corner[m] = c[m];
+  }
+
+  const Vector3d *p = b.corner;
+  b.center = Vector3d::Zero();
+  for (int m = 0; m < 8; ++m) b.center += p[m] / 8.0;
+  const Vector3d edges[3] = {p[1] - p[0], p[3] - p[0], p[4] - p[0]};
+  for (int k = 0; k < 3; ++k) {
+    b.half[k] = edges[k].norm() / 2.0;
+    b.axis[k] = b.half[k] > 0 ? Vector3d(edges[k].normalized()) : Vector3d::Zero();
+  }
+  // Faces in the order of the original code (1234, 5678, 1265, 5148, 4378, 2673).
+  b.face[0] = make_quad(p[0], p[1], p[2], p[3]);
+  b.face[1] = make_quad(p[4], p[5], p[6], p[7]);
+  b.face[2] = make_quad(p[0], p[1], p[5], p[4]);
+  b.face[3] = make_quad(p[4], p[0], p[3], p[7]);
+  b.face[4] = make_quad(p[3], p[2], p[6], p[7]);
+  b.face[5] = make_quad(p[1], p[5], p[6], p[2]);
+  return b;
+}
+
+double box_signed_distance(const Box &b, const Vector3d &p) {
+  const Vector3d r = p - b.center;
+  Vector3d q;
+  for (int k = 0; k < 3; ++k) q(k) = std::abs(r.dot(b.axis[k])) - b.half[k];
+  return q.cwiseMax(0.0).norm() + std::min(q.maxCoeff(), 0.0);
+}
+
+bool segment_hits_box(const Box &b, const Vector3d &a, const Vector3d &b_end) {
+  // Clip the segment against the three slabs of the box.
+  double lo = 0.0, hi = 1.0;
+  const Vector3d d = b_end - a;
+  for (int k = 0; k < 3; ++k) {
+    const double s = (a - b.center).dot(b.axis[k]);
+    const double ds = d.dot(b.axis[k]);
+    if (std::abs(ds) < 1e-300) {
+      if (std::abs(s) > b.half[k]) return false;
+      continue;
+    }
+    double t0 = (-b.half[k] - s) / ds, t1 = (b.half[k] - s) / ds;
+    if (t0 > t1) std::swap(t0, t1);
+    lo = std::max(lo, t0);
+    hi = std::min(hi, t1);
+    if (lo > hi) return false;
+  }
+  return true;
+}
+
+Vector3d box_force(const Box &b, const Vector3d &robot_pos, const Vector3d &robot_vel,
+                   const Vector3d &goal, double k_cubic, double d_inf) {
+  const double sd = box_signed_distance(b, robot_pos);
+  if (sd <= 0 && min_dist > sd) min_dist = sd;  // inside: negative distance
+
+  // Nearest face(s); ties (edges, corners) are averaged below.
+  VectorXd norm_dist_obs(6);
+  for (int i = 0; i < 6; ++i) norm_dist_obs(i) = quad_dist_obs(b.face[i], robot_pos).norm();
+  const VectorXd minIndexes = findAllMinIndices(norm_dist_obs);
+
+  Eigen::Matrix<double, 4, Eigen::Dynamic> with_check(4, minIndexes.size());
+  for (Eigen::Index i = 0; i < minIndexes.size(); ++i) {
+    const int f = static_cast<int>(minIndexes(i));
+    with_check.col(i) = quad_force(b.face[f], robot_pos, robot_vel, goal, k_cubic, d_inf,
+                                   SteerEdge::NearestGoal);
+  }
+
+  // As in the original: among tied faces, prefer those that do not block the path.
+  const VectorXd keep = findAllMinIndices(with_check.row(3).transpose());
+  Vector3d sum = Vector3d::Zero();
+  for (Eigen::Index i = 0; i < keep.size(); ++i)
+    sum += with_check.block<3, 1>(0, static_cast<int>(keep(i)));
+  return sum / static_cast<double>(keep.size());
+}
+
+Vector3d cubic_force(const Vector3d &obs1, const Vector3d &obs2, const Vector3d &obs3, const Vector3d &obs4,
+                    const Vector3d &obs5, const Vector3d &obs6, const Vector3d &obs7, const Vector3d &obs8,
                     const Vector3d &robot_pos, const Vector3d &robot_vel,
                     const Vector3d &goal, const double &k_cubic, double d_inf) {
-
-  // Signed distance check for interior of box
-  Vector3d center = (obs1 + obs2 + obs3 + obs4 + obs5 + obs6 + obs7 + obs8) / 8.0;
-  Vector3d u1 = obs2 - obs1; double h1 = u1.norm() / 2.0; if (h1 > 1e-9) u1.normalize();
-  Vector3d u2 = obs4 - obs1; double h2 = u2.norm() / 2.0; if (h2 > 1e-9) u2.normalize();
-  Vector3d u3 = obs5 - obs1; double h3 = u3.norm() / 2.0; if (h3 > 1e-9) u3.normalize();
-
-  double q1 = std::abs((robot_pos - center).dot(u1)) - h1;
-  double q2 = std::abs((robot_pos - center).dot(u2)) - h2;
-  double q3 = std::abs((robot_pos - center).dot(u3)) - h3;
-
-  if (q1 <= 0 && q2 <= 0 && q3 <= 0) {
-    // Inside the box! Signed distance is negative
-    double sd = std::max(q1, std::max(q2, q3));
-    if (min_dist > sd) {
-      min_dist = sd;
-    }
-  }
-
-  Matrix<double, 3, 6> robot_obs;
-  robot_obs.col(0) = plane_dist_obs(obs1, obs2, obs3, obs4, robot_pos);
-  robot_obs.col(1) = plane_dist_obs(obs5, obs6, obs7, obs8, robot_pos);
-  robot_obs.col(2) = plane_dist_obs(obs1, obs2, obs6, obs5, robot_pos);
-  robot_obs.col(3) = plane_dist_obs(obs5, obs1, obs4, obs8, robot_pos);
-  robot_obs.col(4) = plane_dist_obs(obs4, obs3, obs7, obs8, robot_pos);
-  robot_obs.col(5) = plane_dist_obs(obs2, obs6, obs7, obs3, robot_pos);
-
-  VectorXd norm_dist_obs(6); 
-  norm_dist_obs = robot_obs.colwise().norm();
-  VectorXd minIndexes = findAllMinIndices(norm_dist_obs);
-
-  Eigen::Matrix<double, 4, Eigen::Dynamic> cubic_force_with_check(4, minIndexes.size());
-
-  for (size_t i = 0; i < minIndexes.size(); i++) {
-      Eigen::Index minIndex = minIndexes(i);
-
-      Vector3d plane_point1;
-      Vector3d plane_point2;
-      Vector3d plane_point3;
-      Vector3d plane_point4;
-
-      if (minIndex == 0) {
-        plane_point1 = obs1; plane_point2 = obs2; plane_point3 = obs3; plane_point4 = obs4;
-      } else if (minIndex == 1) {
-        plane_point1 = obs5; plane_point2 = obs6; plane_point3 = obs7; plane_point4 = obs8;
-      } else if (minIndex == 2) {
-        // Face 2 is (obs1, obs2, obs6, obs5)
-        plane_point1 = obs1; plane_point2 = obs2; plane_point3 = obs6; plane_point4 = obs5;
-      } else if (minIndex == 3) {
-        // Face 3 is (obs5, obs1, obs4, obs8)
-        plane_point1 = obs5; plane_point2 = obs1; plane_point3 = obs4; plane_point4 = obs8;
-      } else if (minIndex == 4) {
-        // Face 4 is (obs4, obs3, obs7, obs8)
-        plane_point1 = obs4; plane_point2 = obs3; plane_point3 = obs7; plane_point4 = obs8;
-      } else if (minIndex == 5) {
-        // Face 5 is (obs2, obs6, obs7, obs3)
-        plane_point1 = obs2; plane_point2 = obs6; plane_point3 = obs7; plane_point4 = obs3;
-      } else {
-        std::cerr << "no correct cubic plane finding" << std::endl;
-        abort();
-      }
-
-      cubic_force_with_check.col(i) = plane_force_closest_goal(plane_point1, plane_point2, plane_point3, plane_point4,
-                                                              robot_pos, robot_vel, goal, k_cubic, d_inf);
-  }
-
-  VectorXd intersect_check_for_all_plane = findAllMinIndices(cubic_force_with_check.row(3));
-
-  Eigen::Matrix<double, 3, Eigen::Dynamic> cubic_force_after_check(3, intersect_check_for_all_plane.size());
-  for (size_t i = 0; i < intersect_check_for_all_plane.size(); i++) {
-    int idx = static_cast<int>(intersect_check_for_all_plane(i));
-    cubic_force_after_check.col(i) = cubic_force_with_check.block(0, idx, 3, 1);
-  }
-  
-  return cubic_force_after_check.rowwise().mean();
+  const Vector3d corners[8] = {obs1, obs2, obs3, obs4, obs5, obs6, obs7, obs8};
+  return box_force(make_box(corners), robot_pos, robot_vel, goal, k_cubic, d_inf);
 }
